@@ -1,0 +1,1404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doppler Velocity Loop</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500&family=STIX+Two+Text:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: a slide deck on aeronautical-chart paper. Copy column left, live
+   instrument right; restricted airspace in chart magenta, estimates in blue,
+   velocity in teal, truth as a dashed ink reference. */
+:root {
+  --paper: #ecf0f2;
+  --panel: #f8fafb;
+  --ink: #13223a;
+  --ink2: #4b5c71;
+  --grid: #c8d2db;
+  --nav: #1c5fb8;
+  --vel: #0b7a83;
+  --fence: #a3176f;
+  --warn: #b26a00;
+  --ok: #2b7a4b;
+  --stop: #c0292b;
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-math: "STIX Two Text", "Cambria Math", "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0c141e; --panel: #122030; --ink: #dce6ef; --ink2: #93a4b6; --grid: #26384a;
+    --nav: #6ea8ff; --vel: #45c6cf; --fence: #ff5cb4; --warn: #f0a63a; --ok: #5bc78a; --stop: #ff6b6b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0c141e; --panel: #122030; --ink: #dce6ef; --ink2: #93a4b6; --grid: #26384a;
+  --nav: #6ea8ff; --vel: #45c6cf; --fence: #ff5cb4; --warn: #f0a63a; --ok: #5bc78a; --stop: #ff6b6b;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 17px/1.55 var(--f-body);
+  font-variation-settings: "wdth" 100;
+}
+
+.deck {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* ---------- header / footer ---------- */
+.bar {
+  display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; justify-content: space-between;
+  padding-block: 14px 12px;
+  border-bottom: 1px solid var(--grid);
+  max-width: 1320px; width: 100%; margin: 0 auto;
+}
+.bar .deckname {
+  font: 700 15px/1.2 var(--f-display); font-variation-settings: "wdth" 118;
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.bar .deckname span { color: var(--fence); }
+.bar .where { font: 500 13px/1.2 var(--f-mono); color: var(--ink2); font-variant-numeric: tabular-nums; }
+
+.nav {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-block: 12px 16px;
+  border-top: 1px solid var(--grid);
+  max-width: 1320px; width: 100%; margin: 0 auto;
+}
+.ticks { display: flex; gap: 6px; flex: 1 1 auto; flex-wrap: wrap; }
+.tick {
+  font: 500 12px/1 var(--f-mono); color: var(--ink2);
+  min-width: 34px; height: 30px; padding: 0 8px;
+  background: transparent; border: 1px solid var(--grid); border-radius: 2px; cursor: pointer;
+}
+.tick[aria-current="step"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.navbtn {
+  font: 600 14px/1 var(--f-display); font-variation-settings: "wdth" 110;
+  height: 34px; padding: 0 14px; border-radius: 2px; cursor: pointer;
+  color: var(--ink); background: var(--panel); border: 1px solid var(--grid);
+}
+.navbtn:disabled { opacity: .4; cursor: default; }
+.hint { font: 400 12px/1.2 var(--f-mono); color: var(--ink2); }
+
+button:focus-visible, input:focus-visible, select:focus-visible, .tick:focus-visible {
+  outline: 2px solid var(--nav); outline-offset: 2px;
+}
+
+/* ---------- slides ---------- */
+main { padding-block: 28px 24px; min-width: 0; }
+.slide {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.25fr);
+  gap: 28px 44px;
+  align-items: start;
+  max-width: 1320px; margin: 0 auto;
+}
+.copy { display: flex; flex-direction: column; gap: 14px; min-width: 0; max-width: 62ch; }
+.eyebrow {
+  margin: 0; font: 600 12px/1.2 var(--f-display); font-variation-settings: "wdth" 112;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--fence);
+}
+h1, h2 {
+  margin: 0; font-family: var(--f-display); font-weight: 750; font-variation-settings: "wdth" 114;
+  font-size: clamp(28px, 3.1vw, 44px); line-height: 1.06; letter-spacing: -0.01em; text-wrap: balance;
+}
+.copy p { margin: 0; }
+.copy .lede { font-size: 19px; }
+.small { font-size: 15px; color: var(--ink2); }
+code { font-family: var(--f-mono); font-size: 0.88em; }
+
+.eq {
+  font-family: var(--f-math); font-size: 21px; line-height: 1.55;
+  background: var(--panel); padding: 12px 16px;
+  overflow-x: auto; white-space: nowrap;
+}
+.eq .row { display: block; }
+.eq i { font-style: italic; }
+.eq .lbl { font: 500 12px/1 var(--f-mono); color: var(--ink2); margin-left: 12px; }
+.k-v { color: var(--vel); font-weight: 600; }
+.k-s { color: var(--nav); font-weight: 600; }
+.k-f { color: var(--fence); font-weight: 600; }
+.k-w { color: var(--warn); font-weight: 600; }
+
+.stage { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.plot {
+  position: relative; width: 100%;
+  height: min(56vh, 520px); min-height: 280px;
+  background: var(--panel);
+}
+.plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.plot.short { height: min(44vh, 400px); }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; }
+.ctl { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink2); }
+.ctl output { font: 500 13px/1 var(--f-mono); color: var(--ink); min-width: 6ch; font-variant-numeric: tabular-nums; }
+input[type="range"] { accent-color: var(--nav); width: 160px; max-width: 40vw; }
+input[type="checkbox"] { accent-color: var(--nav); width: 16px; height: 16px; }
+select { font: 500 14px/1 var(--f-mono); color: var(--ink); background: var(--panel); border: 1px solid var(--grid); border-radius: 2px; height: 30px; padding: 0 6px; }
+
+.seg { display: inline-flex; border: 1px solid var(--grid); border-radius: 2px; overflow: hidden; }
+.seg button {
+  font: 600 13px/1 var(--f-display); font-variation-settings: "wdth" 106;
+  height: 30px; padding: 0 12px; border: 0; cursor: pointer;
+  background: var(--panel); color: var(--ink2);
+}
+.seg button + button { border-left: 1px solid var(--grid); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.btn {
+  font: 600 13px/1 var(--f-display); font-variation-settings: "wdth" 106;
+  height: 30px; padding: 0 12px; border-radius: 2px; cursor: pointer;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--grid);
+}
+
+.ro {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px 18px; margin: 0;
+}
+.ro div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ro dt { font: 600 13px/1.2 var(--f-display); letter-spacing: .01em; color: var(--ink2); }
+.ro dd { margin: 0; font: 500 16px/1.25 var(--f-mono); font-variant-numeric: tabular-nums; }
+
+.pill {
+  display: inline-block; font: 600 12px/1 var(--f-mono); letter-spacing: .06em;
+  padding: 5px 8px; border-radius: 2px; border: 1px solid currentColor;
+}
+.pill[data-s="CLEAR"], .pill[data-s="VERIFIED"], .pill[data-s="PASS"] { color: var(--ok); }
+.pill[data-s="SLOW"], .pill[data-s="EXCLUDED"] { color: var(--warn); }
+.pill[data-s="STOP"], .pill[data-s="FAIL"], .pill[data-s="NOT VERIFIED"] { color: var(--stop); }
+.pill[data-s="NO-FIX"], .pill[data-s="NO DOF"] { color: var(--ink2); }
+
+/* slide 1 buffer bar */
+.bufbar { display: flex; flex-direction: column; gap: 8px; background: var(--panel); padding: 18px 16px 14px; }
+.bufbar .track { position: relative; height: 46px; display: flex; }
+.bufbar .seg-r { background: var(--ink2); }
+.bufbar .seg-s { background: var(--nav); }
+.bufbar .seg-v { background: var(--vel); }
+.bufbar .track > div { height: 100%; transition: width .25s ease; }
+.bufbar .axis { position: relative; height: 18px; font: 400 11px/1 var(--f-mono); color: var(--ink2); }
+.bufbar .axis span { position: absolute; transform: translateX(-50%); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; color: var(--ink2); }
+.legend i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+
+/* slide 3 H table */
+.tablewrap { overflow-x: auto; background: var(--panel); }
+table.h { border-collapse: collapse; width: 100%; font: 400 13px/1.3 var(--f-mono); font-variant-numeric: tabular-nums; }
+table.h th, table.h td { padding: 5px 10px; text-align: right; white-space: nowrap; }
+table.h th { font: 600 12px/1.2 var(--f-mono); color: var(--ink2); border-bottom: 1px solid var(--grid); }
+table.h th, table.h td { padding-block: 3px; }
+table.h td:first-child, table.h th:first-child { text-align: left; }
+table.h tr.off td { color: var(--ink2); text-decoration: line-through; opacity: .6; }
+
+/* slide 8 pipeline */
+.pipe { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
+.pipe .node { background: var(--panel); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pipe .node b { font: 700 14px/1.2 var(--f-mono); }
+.pipe .node span { font-size: 14px; color: var(--ink2); }
+.pipe .node.hot { outline: 2px solid var(--vel); outline-offset: -2px; }
+.uses { width: 100%; border-collapse: collapse; font-size: 15px; }
+.uses th, .uses td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+.uses th { font: 600 11px/1.2 var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink2); }
+.uses td:first-child { font-family: var(--f-mono); font-size: 14px; }
+
+@media (max-width: 900px) {
+  .slide { grid-template-columns: minmax(0, 1fr); }
+  .copy { max-width: none; }
+  .pipe { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .eq { font-size: 18px; }
+}
+@media (max-width: 480px) {
+  .hint { display: none; }
+  .plot { height: 320px; }
+  input[type="range"] { width: 120px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bufbar .track > div { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="deck">
+  <header class="bar">
+    <div class="deckname">SPP geofence <span>/</span> velocity</div>
+    <div class="where" id="where">1 / 8</div>
+  </header>
+
+  <main>
+  <!-- ================================================================ 1 -->
+  <section class="slide" id="question" data-title="Where does v come from?">
+    <div class="copy">
+      <p class="eyebrow">1 · The question</p>
+      <h1>The fence buffer needs a velocity</h1>
+      <p class="lede">Position least squares already gives <span class="k-s">σ<sub>h</sub></span> through HDOP. The buffer also grows with speed, because the drone keeps flying for Δt before a new decision bites.</p>
+      <div class="eq" aria-label="buffer equation">
+        <span class="row"><i>r</i><sub>buffer</sub> = <i>r</i><sub>drone</sub> + <i>k</i>·<span class="k-s">σ<sub>h</sub></span> + <span class="k-v"><i>v</i></span>·Δ<i>t</i></span>
+        <span class="row"><span class="k-s">σ<sub>h</sub></span> = HDOP · σ<sub>UERE</sub><span class="lbl">from position LS</span></span>
+        <span class="row"><span class="k-v"><i>v</i></span> = ?<span class="lbl">this deck</span></span>
+      </div>
+      <p class="small">k = 3.03 from P(miss) = 10⁻⁴. Δt = 1.0 s GNSS age + 0.1 s compute + 0.5 s reaction = 1.6 s. Values from <code>params.py</code>.</p>
+    </div>
+    <div class="stage">
+      <div class="bufbar">
+        <div class="track" id="s1-track">
+          <div class="seg-r" id="s1-r"></div><div class="seg-s" id="s1-s"></div><div class="seg-v" id="s1-v-seg"></div>
+        </div>
+        <div class="axis" id="s1-axis"></div>
+        <div class="legend">
+          <span><i style="background:var(--ink2)"></i>r<sub>drone</sub> 0.5 m</span>
+          <span><i style="background:var(--nav)"></i>k·σ<sub>h</sub> <b id="s1-ks">–</b></span>
+          <span><i style="background:var(--vel)"></i>v·Δt <b id="s1-vdt">–</b></span>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="ctl" for="s1-v"><span>Closing speed v</span><input type="range" id="s1-v" min="0" max="10" step="0.5" value="6"><output id="s1-v-o">6.0 m/s</output></label>
+        <label class="ctl" for="s1-hdop"><span>HDOP</span><input type="range" id="s1-hdop" min="0.8" max="6" step="0.1" value="1.8"><output id="s1-hdop-o">1.8</output></label>
+      </div>
+      <div class="eq" id="s1-live">–</div>
+      <p class="small">At 10 m/s the speed term (16 m) is as big as the geometry term in open sky, so a wrong or noisy <i>v</i> moves the fence decision as much as a bad HDOP.</p>
+    </div>
+  </section>
+
+  <!-- ================================================================ 2 -->
+  <section class="slide" id="doppler" data-title="Doppler is range rate" hidden>
+    <div class="copy">
+      <p class="eyebrow">2 · One satellite</p>
+      <h2>Doppler measures how fast the range changes</h2>
+      <p>The receiver tracks the carrier frequency shift <i>f</i><sub>D</sub>. Times the wavelength, it is the range rate: the relative velocity projected on the line of sight, plus clock drift.</p>
+      <div class="eq">
+        <span class="row">ρ̇<sub><i>i</i></sub> = −λ·<i>f</i><sub>D,<i>i</i></sub><span class="lbl">λ = c / f<sub>L1</sub> = 0.1903 m</span></span>
+        <span class="row">ρ̇<sub><i>i</i></sub> = <b>e</b><sub><i>i</i></sub><sup>T</sup>(<b>v</b><sub>sat</sub> − <span class="k-v"><b>v</b><sub><i>u</i></sub></span>) + <i>c</i>·δṫ</span>
+        <span class="row">ρ̇<sub><i>i</i></sub> − <b>e</b><sub><i>i</i></sub><sup>T</sup><b>v</b><sub>sat</sub> = −<b>e</b><sub><i>i</i></sub><sup>T</sup><span class="k-v"><b>v</b><sub><i>u</i></sub></span> + <i>c</i>·δṫ<span class="lbl">known left, unknown right</span></span>
+      </div>
+      <p class="small">The satellite term is hundreds of m/s and comes from the ephemeris. The drone term is a few m/s. One satellite gives one projection of <b>v</b><sub>u</sub>, so we need at least four for [v<sub>E</sub>, v<sub>N</sub>, v<sub>U</sub>, c·δṫ].</p>
+    </div>
+    <div class="stage">
+      <div class="plot"><canvas id="s2-c" aria-label="One satellite over a drone: line of sight, satellite velocity and drone velocity projections"></canvas></div>
+      <div class="controls">
+        <label class="ctl" for="s2-ve"><span>Drone east speed</span><input type="range" id="s2-ve" min="-15" max="15" step="0.5" value="8"><output id="s2-ve-o">8.0 m/s</output></label>
+        <button class="btn play" id="s2-play" type="button" aria-pressed="true">Pause</button>
+      </div>
+      <dl class="ro" id="s2-ro">
+        <div><dt>Elevation</dt><dd id="s2-el">–</dd></div>
+        <div><dt>eᵀv<sub>sat</sub></dt><dd id="s2-es">–</dd></div>
+        <div><dt>eᵀv<sub>u</sub></dt><dd id="s2-eu">–</dd></div>
+        <div><dt>c·δṫ</dt><dd>80.00 m/s</dd></div>
+        <div><dt>ρ̇</dt><dd id="s2-rr">–</dd></div>
+        <div><dt>f<sub>D</sub></dt><dd id="s2-fd">–</dd></div>
+        <div><dt>z = ρ̇ − eᵀv<sub>sat</sub></dt><dd id="s2-z">–</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ================================================================ 3 -->
+  <section class="slide" id="same-h" data-title="The same H" hidden>
+    <div class="copy">
+      <p class="eyebrow">3 · Stack the satellites</p>
+      <h2>It is the H you already built for position</h2>
+      <p>Each satellite gives a row [−<b>e</b><sub><i>i</i></sub><sup>T</sup>, 1]. The position solve uses those rows for Δρ, and the Doppler solve uses them for <i>z</i>. Line-of-sight vectors and elevation weights are computed once.</p>
+      <div class="eq">
+        <span class="row">Δ<b>ρ</b> = <b>H</b>·[Δ<b>x</b>; Δ<i>b</i>]<span class="lbl">position</span></span>
+        <span class="row"><b>z</b> = <b>H</b>·[<span class="k-v"><b>v</b><sub><i>u</i></sub></span>; <i>c</i>·δṫ]<span class="lbl">velocity</span></span>
+        <span class="row"><b>Q</b> = (<b>H</b><sup>T</sup><b>W</b><b>H</b>)<sup>−1</sup>, &nbsp;<i>w<sub>i</sub></i> = sin²<i>el<sub>i</sub></i></span>
+      </div>
+      <p class="small">Same Q means the same HDOP for both. Street canyon: buildings hide the satellites across the street, the geometry stretches, and position and velocity get worse together.</p>
+    </div>
+    <div class="stage">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Sky" id="s3-seg">
+          <button type="button" data-m="open" aria-pressed="true">Open sky</button>
+          <button type="button" data-m="street" aria-pressed="false">Street, 15 m</button>
+          <button type="button" data-m="deep" aria-pressed="false">Canyon, 30 m</button>
+        </div>
+      </div>
+      <dl class="ro">
+        <div><dt>Satellites</dt><dd id="s3-n">–</dd></div>
+        <div><dt>Redundancy n−4</dt><dd id="s3-dof">–</dd></div>
+        <div><dt>HDOP</dt><dd id="s3-hdop">–</dd></div>
+        <div><dt>VDOP</dt><dd id="s3-vdop">–</dd></div>
+      </dl>
+      <div class="plot short"><canvas id="s3-c" aria-label="Sky plot with building mask and satellites"></canvas></div>
+      <div class="tablewrap"><table class="h" id="s3-t" aria-label="Design matrix H"></table></div>
+    </div>
+  </section>
+
+  <!-- ================================================================ 4 -->
+  <section class="slide" id="solve" data-title="Solve for v" hidden>
+    <div class="copy">
+      <p class="eyebrow">4 · One least-squares solve</p>
+      <h2>Velocity, with a covariance that tells the truth</h2>
+      <p>No iteration: the Doppler model is already linear. The covariance uses the same Q, scaled by the range-rate noise.</p>
+      <div class="eq">
+        <span class="row">[<span class="k-v"><b>v̂</b></span>; <i>c</i>·δṫ̂] = (<b>H</b><sup>T</sup><b>W</b><b>H</b>)<sup>−1</sup><b>H</b><sup>T</sup><b>W</b><b>z</b></span>
+        <span class="row">cov = σ<sub>ρ̇</sub>²·<b>Q</b>, &nbsp; σ<sub><i>v</i>,h</sub> = HDOP·σ<sub>ρ̇</sub></span>
+      </div>
+      <p class="small">Each dot is one epoch's estimate. The ellipse is the predicted 95 % region from Q. If the predicted σ and the measured spread agree, the buffer can trust it. Turn weighting off to see why W matters.</p>
+    </div>
+    <div class="stage">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Sky" id="s4-seg">
+          <button type="button" data-m="open" aria-pressed="true">Open sky</button>
+          <button type="button" data-m="street" aria-pressed="false">Street, 15 m</button>
+          <button type="button" data-m="deep" aria-pressed="false">Canyon, 30 m</button>
+        </div>
+        <label class="ctl" for="s4-sig"><span>σ<sub>ρ̇</sub></span><input type="range" id="s4-sig" min="0.05" max="0.4" step="0.05" value="0.2"><output id="s4-sig-o">0.20 m/s</output></label>
+        <label class="ctl" for="s4-w"><input type="checkbox" id="s4-w" checked><span>sin²el weights</span></label>
+        <button class="btn play" id="s4-play" type="button" aria-pressed="true">Pause</button>
+      </div>
+      <div class="plot"><canvas id="s4-c" aria-label="Scatter of velocity estimates around the true velocity with predicted 95 percent ellipse"></canvas></div>
+      <dl class="ro">
+        <div><dt>Satellites</dt><dd id="s4-n">–</dd></div>
+        <div><dt>HDOP</dt><dd id="s4-hdop">–</dd></div>
+        <div><dt>Predicted σ<sub>v,h</sub></dt><dd id="s4-pred">–</dd></div>
+        <div><dt>Measured rms</dt><dd id="s4-meas">–</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ================================================================ 5 -->
+  <section class="slide" id="residuals" data-title="Residual test" hidden>
+    <div class="copy">
+      <p class="eyebrow">5 · Filter one: residuals</p>
+      <h2>A bad satellite shows up in the residuals</h2>
+      <p>A reflected (NLOS) signal adds a bias the geometry cannot explain. Healthy residuals follow χ² with n − 4 degrees of freedom; a biased one pushes the sum over the threshold.</p>
+      <div class="eq">
+        <span class="row"><b>r</b> = <b>z</b> − <b>H</b>·[<b>v̂</b>; <i>c</i>·δṫ̂]</span>
+        <span class="row">SSE = <b>r</b><sup>T</sup><b>W</b><b>r</b> / σ² &nbsp;~&nbsp; χ²(<i>n</i> − 4)</span>
+        <span class="row">SSE &gt; <i>T</i>(<i>n</i>−4, 10⁻³) ⇒ drop worst, solve again</span>
+      </div>
+      <p class="small">"Worst" means the largest standardised residual |r<sub>i</sub>| / √(W⁻¹ − HQHᵀ)<sub>ii</sub>. Try G05 or G13: low or lonely satellites need a much bigger bias before the test sees it. The same test runs on the pseudoranges in <code>spp.fde</code>. A position fix is only called verified with at least 3 redundant satellites left. With less, two NLOS signals can hide inside the residuals.</p>
+    </div>
+    <div class="stage">
+      <div class="controls">
+        <label class="ctl" for="s5-sat"><span>Reflected satellite</span><select id="s5-sat"></select></label>
+        <label class="ctl" for="s5-bias"><span>Bias</span><input type="range" id="s5-bias" min="0" max="4" step="0.25" value="2.5"><output id="s5-bias-o">2.50 m/s</output></label>
+        <label class="ctl" for="s5-fde"><input type="checkbox" id="s5-fde" checked><span>Exclude</span></label>
+        <button class="btn play" id="s5-play" type="button" aria-pressed="true">Pause</button>
+      </div>
+      <div class="plot short"><canvas id="s5-c" aria-label="Standardised residual per satellite and the chi-square test against its threshold"></canvas></div>
+      <dl class="ro">
+        <div><dt>Test</dt><dd><span class="pill" id="s5-state" data-s="PASS">PASS</span></dd></div>
+        <div><dt>SSE / threshold</dt><dd id="s5-t">–</dd></div>
+        <div><dt>Excluded</dt><dd id="s5-ex">–</dd></div>
+        <div><dt>|v̂ − v| all sats</dt><dd id="s5-e0">–</dd></div>
+        <div><dt>|v̂ − v| after test</dt><dd id="s5-e1">–</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ================================================================ 6 -->
+  <section class="slide" id="prior" data-title="IMU prior" hidden>
+    <div class="copy">
+      <p class="eyebrow">6 · Filter two: an IMU prior</p>
+      <h2>Least squares with a prior is the Kalman filter</h2>
+      <p>Predict v from the last estimate plus IMU acceleration, then add that prediction to the least-squares cost. The minimiser is exactly the Kalman update.</p>
+      <div class="eq">
+        <span class="row"><b>x</b>⁻ = <b>x</b> + <b>a</b><sub>IMU</sub>Δ<i>t</i>, &nbsp; <b>P</b>⁻ = <b>P</b> + (σ<sub><i>a</i></sub>Δ<i>t</i>)²<b>I</b></span>
+        <span class="row">min ‖<b>z</b> − <b>Hx</b>‖²<sub><b>R</b>⁻¹</sub> + ‖<b>x</b> − <b>x</b>⁻‖²<sub>(<b>P</b>⁻)⁻¹</sub><span class="lbl">R⁻¹ = W/σ²</span></span>
+        <span class="row"><b>x̂</b> = (<b>H</b><sup>T</sup><b>R</b><sup>−1</sup><b>H</b> + (<b>P</b>⁻)<sup>−1</sup>)<sup>−1</sup>(<b>H</b><sup>T</sup><b>R</b><sup>−1</sup><b>z</b> + (<b>P</b>⁻)<sup>−1</sup><b>x</b>⁻)</span>
+        <span class="row">&nbsp;&nbsp;&nbsp;≡ <b>x</b>⁻ + <b>K</b>(<b>z</b> − <b>Hx</b>⁻)<span class="lbl">Kalman gain form</span></span>
+      </div>
+      <p class="small">σ<sub>a</sub> is the one knob: small trusts the IMU, large trusts GNSS. Under the overpass only 3 satellites remain, so plain least squares has no answer, but the prior still lets those 3 rows correct v.</p>
+    </div>
+    <div class="stage">
+      <div class="controls">
+        <label class="ctl" for="s6-acc"><span>σ<sub>a</sub></span><input type="range" id="s6-acc" min="0" max="7" step="1" value="3"><output id="s6-acc-o">0.30 m/s²</output></label>
+        <button class="btn" id="s6-new" type="button">New noise</button>
+        <button class="btn play" id="s6-play" type="button" aria-pressed="true">Pause</button>
+      </div>
+      <div class="plot"><canvas id="s6-c" aria-label="East and north velocity over a 90 second flight: truth, raw Doppler least squares, and filtered"></canvas></div>
+      <dl class="ro">
+        <div><dt>Raw LS rms</dt><dd id="s6-raw">–</dd></div>
+        <div><dt>Filtered rms</dt><dd id="s6-flt">–</dd></div>
+        <div><dt>Canyon raw / filtered</dt><dd id="s6-can">–</dd></div>
+        <div><dt>Epochs with no LS</dt><dd id="s6-gap">–</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ================================================================ 7 -->
+  <section class="slide" id="loop" data-title="Closing the loop" hidden>
+    <div class="copy">
+      <p class="eyebrow">7 · Closing the loop</p>
+      <h2>v sets the buffer, and the buffer sets the speed</h2>
+      <p>Every epoch: distance to the fence from the estimated position, buffer from σ<sub>h</sub> and closing speed, then the fastest closing speed that still fits.</p>
+      <div class="eq">
+        <span class="row"><i>r</i><sub>buffer</sub> = <i>r</i><sub>drone</sub> + <i>k</i>·<span class="k-s">σ<sub>h</sub></span> + <span class="k-v"><i>v</i><sub>close</sub></span>·Δ<i>t</i></span>
+        <span class="row"><i>v</i><sub>cap</sub> = (<i>d</i> − <i>r</i><sub>drone</sub> − <i>k</i>·<span class="k-s">σ<sub>h</sub></span>) / Δ<i>t</i></span>
+        <span class="row"><i>v</i><sub>close</sub> = max(0, −<span class="k-v"><b>v̂</b></span>·<b>n̂</b>)<span class="lbl">towards the fence only</span></span>
+      </div>
+      <p class="small">CLEAR flies as planned, SLOW cuts the closing speed to v<sub>cap</sub>, STOP hovers. In the 30 m canyon only 5 satellites remain, so the fix cannot be verified and σ<sub>h</sub> falls back to 50 m. The drone stays about 150 m back. Simulation runs at 2× speed.</p>
+    </div>
+    <div class="stage">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Sky" id="s7-seg">
+          <button type="button" data-m="open" aria-pressed="true">Open sky</button>
+          <button type="button" data-m="street" aria-pressed="false">Street, 15 m</button>
+          <button type="button" data-m="deep" aria-pressed="false">Canyon, 30 m</button>
+        </div>
+        <button class="btn" id="s7-restart" type="button">Restart</button>
+        <button class="btn play" id="s7-play" type="button" aria-pressed="true">Pause</button>
+      </div>
+      <div class="plot"><canvas id="s7-c" aria-label="Top-down map: drone flying up a street towards a restricted zone, with its buffer circle"></canvas></div>
+      <dl class="ro">
+        <div><dt>State</dt><dd><span class="pill" id="s7-state" data-s="CLEAR">CLEAR</span></dd></div>
+        <div><dt>Fix</dt><dd><span class="pill" id="s7-fix" data-s="VERIFIED">VERIFIED</span></dd></div>
+        <div><dt>Sats · HDOP</dt><dd id="s7-n">–</dd></div>
+        <div><dt>σ<sub>h</sub></dt><dd id="s7-sh">–</dd></div>
+        <div><dt>d (estimated)</dt><dd id="s7-d">–</dd></div>
+        <div><dt>v<sub>close</sub></dt><dd id="s7-v">–</dd></div>
+        <div><dt>r<sub>buffer</sub></dt><dd id="s7-rb">–</dd></div>
+        <div><dt>v<sub>cap</sub></dt><dd id="s7-cap">–</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ================================================================ 8 -->
+  <section class="slide" id="summary" data-title="Summary" hidden>
+    <div class="copy">
+      <p class="eyebrow">8 · Summary</p>
+      <h2>One least-squares engine, three safety numbers</h2>
+      <p>Nothing here is outside the syllabus. The step that is new is the last one: turning position, velocity and residuals into a decision the drone acts on.</p>
+      <p class="small">Future work: on-board sensors. The same buffer logic gives a speed limit for any sensing range R<sub>s</sub>: you cannot outrun your headlights, R<sub>s</sub> ≥ r<sub>drone</sub> + v·Δt + v²/2a.</p>
+    </div>
+    <div class="stage">
+      <div class="pipe" aria-label="Pipeline">
+        <div class="node"><b>GNSS epoch</b><span>pseudorange ρ, Doppler f<sub>D</sub>, ephemeris</span></div>
+        <div class="node"><b>spp.py</b><span>WLS p, Q → HDOP → σ<sub>h</sub>; χ² exclude or flag</span></div>
+        <div class="node hot"><b>spp.py</b><span>Doppler WLS v (same H); IMU prior = Kalman</span></div>
+        <div class="node"><b>boundary.py</b><span>distance field d, n̂; r<sub>buffer</sub>, v<sub>cap</sub> → field.py</span></div>
+      </div>
+      <div class="tablewrap">
+        <table class="uses">
+          <thead><tr><th>LS output</th><th>Becomes</th><th>Used for</th></tr></thead>
+          <tbody>
+            <tr><td>p, Q = (HᵀWH)⁻¹</td><td>HDOP, σ<sub>h</sub> = HDOP·σ<sub>UERE</sub></td><td>buffer width k·σ<sub>h</sub></td></tr>
+            <tr><td>Doppler v (same H)</td><td>closing speed v<sub>close</sub></td><td>buffer growth v·Δt, speed cap</td></tr>
+            <tr><td>residuals r</td><td>SSE ~ χ²(n−4)</td><td>exclude a satellite, or distrust σ<sub>h</sub></td></tr>
+            <tr><td>LS + IMU prior</td><td>Kalman update</td><td>smooth v, coast through gaps</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  </main>
+
+  <footer class="nav">
+    <button class="navbtn" id="prev" type="button" aria-label="Previous slide">← Prev</button>
+    <div class="ticks" id="ticks" role="tablist" aria-label="Slides"></div>
+    <span class="hint">← → to move</span>
+    <button class="navbtn" id="next" type="button" aria-label="Next slide">Next →</button>
+  </footer>
+</div>
+
+<script>
+(() => {
+'use strict';
+// ======================================================================
+// Shared model: mirrors params.py / spp.py (see README sections 2-5)
+// ======================================================================
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+const C_LIGHT = 299792458, LAMBDA = C_LIGHT / 1575.42e6;
+const PRM = {
+  R_DRONE: 0.5, V_MAX: 10, DT: 1.6, K: Math.sqrt(-Math.log(1e-4)),
+  SIGMA_UERE: 5.0, SIGMA_RR: 0.2, MASK: 10, P_FA: 1e-3, MIN_DOF: 3,
+  SIGMA_FALLBACK: 50, SIGMA_DRIFT: 0.5, DRIFT: 80,
+};
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rand = mulberry32(4004);
+function gauss() {
+  let u = 0; while (u === 0) u = rand();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rand());
+}
+
+// ---------- linear algebra ----------
+function inv(A) {
+  const n = A.length;
+  const M = A.map((r, i) => [...r, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    const d = M[c][c];
+    for (let j = 0; j < 2 * n; j++) M[c][j] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c];
+      if (f !== 0) for (let j = 0; j < 2 * n; j++) M[r][j] -= f * M[c][j];
+    }
+  }
+  return M.map(r => r.slice(n));
+}
+const matvec = (A, x) => A.map(r => r.reduce((s, a, j) => s + a * x[j], 0));
+function normal(H, w, z) {           // N = H^T W H, b = H^T W z
+  const m = H[0].length;
+  const N = Array.from({ length: m }, () => new Array(m).fill(0));
+  const b = new Array(m).fill(0);
+  H.forEach((h, i) => {
+    for (let a = 0; a < m; a++) {
+      if (z) b[a] += h[a] * w[i] * z[i];
+      for (let c = 0; c < m; c++) N[a][c] += h[a] * w[i] * h[c];
+    }
+  });
+  return { N, b };
+}
+function wls(H, z, w) {               // spp.wls
+  const { N, b } = normal(H, w, z);
+  const Q = inv(N);
+  const x = matvec(Q, b);
+  const r = z.map((zi, i) => zi - H[i].reduce((s, h, j) => s + h * x[j], 0));
+  return { x, Q, r };
+}
+function lsPrior(H, z, rinv, xp, Pp) { // spp.ls_with_prior
+  const Pinv = inv(Pp);
+  const { N, b } = H.length ? normal(H, rinv, z) : { N: Pp.map(r => r.map(() => 0)), b: xp.map(() => 0) };
+  const A = N.map((r, i) => r.map((v, j) => v + Pinv[i][j]));
+  const P = inv(A);
+  const rhs = b.map((v, i) => v + Pinv[i].reduce((s, p, j) => s + p * xp[j], 0));
+  return { x: matvec(P, rhs), P };
+}
+
+// ---------- chi-square (exact for integer dof, as spp.chi2_threshold) ----------
+function erfc(x) {
+  const z = Math.abs(x), t = 1 / (1 + 0.5 * z);
+  const r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
+    t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+  return x >= 0 ? r : 2 - r;
+}
+function chi2sf(x, k) {
+  if (x <= 0) return 1;
+  const h = x / 2;
+  if (k % 2 === 0) {
+    let term = 1, tot = 1;
+    for (let j = 1; j < k / 2; j++) { term *= h / j; tot += term; }
+    return Math.exp(-h) * tot;
+  }
+  let tot = 0, term = 0;
+  for (let j = 1; j <= (k - 1) / 2; j++) { term = j === 1 ? Math.sqrt(x) : term * x / (2 * j - 1); tot += term; }
+  return erfc(Math.sqrt(h)) + Math.sqrt(2 / Math.PI) * Math.exp(-h) * tot;
+}
+const thrCache = {};
+function chi2thr(k, pfa = PRM.P_FA) {
+  const key = k + ':' + pfa;
+  if (thrCache[key]) return thrCache[key];
+  let lo = 0, hi = k + 10 * Math.sqrt(2 * k) + 50;
+  while (chi2sf(hi, k) > pfa) hi *= 2;
+  for (let i = 0; i < 100; i++) { const m = (lo + hi) / 2; if (chi2sf(m, k) > pfa) lo = m; else hi = m; }
+  return (thrCache[key] = (lo + hi) / 2);
+}
+
+// ---------- fault detection and exclusion (spp.fde) ----------
+function fde(H, z, w, sigma, maxExcl = 2) {
+  let idx = H.map((_, i) => i);
+  const excluded = [], steps = [];
+  for (;;) {
+    const Hs = idx.map(i => H[i]), zs = idx.map(i => z[i]), ws = idx.map(i => w[i]);
+    const sol = wls(Hs, zs, ws);
+    const dof = idx.length - 4;
+    const out = { sol, idx, excluded, steps, dof, T: NaN, thr: NaN, passed: null };
+    if (dof < 1) return out;
+    out.T = ws.reduce((s, wi, i) => s + wi * sol.r[i] ** 2, 0) / sigma ** 2;
+    out.thr = chi2thr(dof);
+    steps.push({ n: idx.length, dof, T: out.T, thr: out.thr });
+    if (out.T <= out.thr) { out.passed = true; return out; }
+    if (dof < 2 || excluded.length >= maxExcl) { out.passed = false; return out; }
+    const std = stdResiduals(Hs, ws, sol);
+    let worst = 0;
+    std.forEach((s, i) => { if (s > std[worst]) worst = i; });
+    excluded.push(idx[worst]);
+    idx = idx.filter((_, i) => i !== worst);
+  }
+}
+function stdResiduals(H, w, sol) {   // |r_i| / sqrt(1/w_i - h_i^T Q h_i)
+  return H.map((h, i) => {
+    const hqh = h.reduce((s, a, p) => s + a * h.reduce((t, b, q) => t + sol.Q[p][q] * b, 0), 0);
+    return Math.abs(sol.r[i]) / Math.sqrt(Math.max(1 / w[i] - hqh, 1e-12));
+  });
+}
+
+// ---------- sky, street canyon ----------
+const STREET_AZ = 30, HALF_W = 15;
+const CANYON_H = { open: 0, street: 15, deep: 30 };
+const SKY = [
+  { prn: 'G02', az: 45, el: 62 }, { prn: 'G05', az: 130, el: 35, refl: +1.5 },
+  { prn: 'G07', az: 210, el: 18 }, { prn: 'G09', az: 300, el: 50, refl: -1.5 },
+  { prn: 'G13', az: 95, el: 12 }, { prn: 'G15', az: 250, el: 72 },
+  { prn: 'G18', az: 20, el: 25 }, { prn: 'G20', az: 170, el: 80 },
+  { prn: 'G24', az: 330, el: 15 }, { prn: 'G29', az: 275, el: 47 },
+];
+const maskEl = (az, H) => Math.atan2(H * Math.abs(Math.sin((az - STREET_AZ) * D2R)), HALF_W) * R2D;
+function skyState(H, withNlos = false) {   // visible list with flags
+  return SKY.map(s => {
+    const blocked = s.el < PRM.MASK || s.el <= maskEl(s.az, H);
+    const nlos = blocked && withNlos && s.refl !== undefined && s.el >= PRM.MASK;
+    return { ...s, blocked, nlos, use: !blocked || nlos };
+  });
+}
+const los = s => { const a = s.az * D2R, e = s.el * D2R; return [Math.cos(e) * Math.sin(a), Math.cos(e) * Math.cos(a), Math.sin(e)]; };
+const hrow = s => { const e = los(s); return [-e[0], -e[1], -e[2], 1]; };
+const sin2 = s => Math.sin(s.el * D2R) ** 2;
+const hdopOf = Q => Math.sqrt(Q[0][0] + Q[1][1]);
+
+// ======================================================================
+// Rendering helpers
+// ======================================================================
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+let TK = {};
+function readTokens() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ['paper', 'panel', 'ink', 'ink2', 'grid', 'nav', 'vel', 'fence', 'warn', 'ok', 'stop'])
+    TK[k] = cs.getPropertyValue('--' + k).trim();
+}
+function canvas2d(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const r = c.getBoundingClientRect();
+  const W = Math.max(1, Math.round(r.width * dpr)), H = Math.max(1, Math.round(r.height * dpr));
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, r.width, r.height);
+  return { ctx, w: r.width, h: r.height };
+}
+const MONO = (sz, wt = 400) => `${wt} ${sz}px "IBM Plex Mono", ui-monospace, monospace`;
+const SANS = (sz, wt = 600) => `${wt} ${sz}px "Archivo", "Helvetica Neue", Arial, sans-serif`;
+function arrow(ctx, x0, y0, x1, y1, color, width = 2, head = 8) {
+  const a = Math.atan2(y1 - y0, x1 - x0), L = Math.hypot(x1 - x0, y1 - y0);
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  if (L < 3) return;
+  const hh = Math.min(head, L * 0.6);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - hh * Math.cos(a - 0.4), y1 - hh * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - hh * Math.cos(a + 0.4), y1 - hh * Math.sin(a + 0.4));
+  ctx.closePath(); ctx.fill();
+}
+function label(ctx, txt, x, y, color, font, align = 'left', base = 'middle') {
+  ctx.fillStyle = color; ctx.font = font; ctx.textAlign = align; ctx.textBaseline = base; ctx.fillText(txt, x, y);
+}
+const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '–');
+function setPill(el, s) { el.dataset.s = s; el.textContent = s; }
+
+function segGroup(id, onChange) {
+  const g = $(id);
+  g.addEventListener('click', e => {
+    const b = e.target.closest('button[data-m]');
+    if (!b) return;
+    $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    onChange(b.dataset.m);
+  });
+}
+function playButton(id, st) {
+  const b = $(id);
+  const sync = () => { b.setAttribute('aria-pressed', String(st.playing)); b.textContent = st.playing ? 'Pause' : 'Play'; };
+  b.addEventListener('click', () => { st.playing = !st.playing; sync(); });
+  if (REDUCED) st.playing = false;
+  sync();
+}
+
+const slides = {};
+
+// ======================================================================
+// 1. Buffer composition
+// ======================================================================
+(() => {
+  const AX = 120;
+  const axis = $('#s1-axis');
+  for (let m = 0; m <= AX; m += 20) {
+    const s = document.createElement('span');
+    s.style.left = (m / AX * 100) + '%';
+    s.textContent = m === AX ? m + ' m' : m;
+    axis.appendChild(s);
+  }
+  function upd() {
+    const v = +$('#s1-v').value, hd = +$('#s1-hdop').value;
+    const sh = hd * PRM.SIGMA_UERE, a = PRM.R_DRONE, b = PRM.K * sh, c = v * PRM.DT, tot = a + b + c;
+    $('#s1-v-o').textContent = v.toFixed(1) + ' m/s';
+    $('#s1-hdop-o').textContent = hd.toFixed(1);
+    $('#s1-r').style.width = (a / AX * 100) + '%';
+    $('#s1-s').style.width = (b / AX * 100) + '%';
+    $('#s1-v-seg').style.width = (c / AX * 100) + '%';
+    $('#s1-ks').textContent = b.toFixed(1) + ' m';
+    $('#s1-vdt').textContent = c.toFixed(1) + ' m';
+    $('#s1-live').innerHTML = `<i>r</i><sub>buffer</sub> = 0.5 + 3.03 × <span class="k-s">${sh.toFixed(1)}</span> + <span class="k-v">${v.toFixed(1)}</span> × 1.6 = <b>${tot.toFixed(1)} m</b>`;
+  }
+  $('#s1-v').addEventListener('input', upd);
+  $('#s1-hdop').addEventListener('input', upd);
+  upd();
+  slides.question = { enter: upd };
+})();
+
+// ======================================================================
+// 2. One satellite: Doppler geometry in the east-up plane
+// ======================================================================
+(() => {
+  const RE = 6371e3, RO = 26560e3, VO = 3874, T = 24;
+  const st = { playing: true, t: 7 };
+  playButton('#s2-play', st);
+  $('#s2-ve').addEventListener('input', () => { $('#s2-ve-o').textContent = (+$('#s2-ve').value).toFixed(1) + ' m/s'; });
+
+  function frame(dt) {
+    if (st.playing) st.t = (st.t + dt) % T;
+    const ve = +$('#s2-ve').value;
+    const phi = (-74 + 148 * st.t / T) * D2R;
+    const sx = RO * Math.sin(phi), sy = RO * Math.cos(phi) - RE;      // east, up from drone
+    const L = Math.hypot(sx, sy), e = [sx / L, sy / L];
+    const vs = [VO * Math.cos(phi), -VO * Math.sin(phi)];
+    const es = e[0] * vs[0] + e[1] * vs[1];
+    const eu = e[0] * ve;
+    const rr = es - eu + PRM.DRIFT;
+    const el = Math.atan2(e[1], Math.abs(e[0])) * R2D;
+    $('#s2-el').textContent = el.toFixed(1) + '°';
+    $('#s2-es').textContent = es.toFixed(2) + ' m/s';
+    $('#s2-eu').textContent = eu.toFixed(2) + ' m/s';
+    $('#s2-rr').textContent = rr.toFixed(2) + ' m/s';
+    $('#s2-fd').textContent = (-rr / LAMBDA).toFixed(0) + ' Hz';
+    $('#s2-z').textContent = (rr - es).toFixed(2) + ' m/s';
+
+    const { ctx, w, h } = canvas2d($('#s2-c'));
+    const gy = h - 46, cx = w / 2, R = Math.max(60, Math.min(w / 2 - 40, h - 96));
+    // ground and sky dome
+    ctx.fillStyle = TK.grid; ctx.globalAlpha = 0.35; ctx.fillRect(0, gy, w, h - gy); ctx.globalAlpha = 1;
+    ctx.strokeStyle = TK.ink2; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+    ctx.setLineDash([3, 5]); ctx.strokeStyle = TK.grid; ctx.beginPath(); ctx.arc(cx, gy, R, Math.PI, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    label(ctx, 'sky dome, not to scale', 12, 14, TK.ink2, MONO(11));
+    label(ctx, 'W', 12, gy - 10, TK.ink2, MONO(11)); label(ctx, 'E', w - 12, gy - 10, TK.ink2, MONO(11), 'right');
+    // satellite track
+    ctx.strokeStyle = TK.ink2; ctx.globalAlpha = 0.35; ctx.lineWidth = 1; ctx.beginPath();
+    for (let k = 0; k <= 60; k++) {
+      const p = (-74 + 148 * k / 60) * D2R;
+      const ax = RO * Math.sin(p), ay = RO * Math.cos(p) - RE, l = Math.hypot(ax, ay);
+      const X = cx + R * ax / l, Y = gy - R * ay / l;
+      k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    const SX = cx + R * e[0], SY = gy - R * e[1];
+    // line of sight
+    ctx.strokeStyle = TK.ink2; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(cx, gy); ctx.lineTo(SX, SY); ctx.stroke();
+    arrow(ctx, cx, gy, cx + 46 * e[0], gy - 46 * e[1], TK.ink, 2.5, 9);
+    label(ctx, 'e', cx + 52 * e[0] + 8, gy - 52 * e[1], TK.ink, SANS(15, 700));
+    // satellite velocity and its projection on e
+    const sv = 130 / VO;
+    const tip = [SX + sv * vs[0], SY - sv * vs[1]];
+    arrow(ctx, SX, SY, tip[0], tip[1], TK.ink2, 2);
+    label(ctx, 'v_sat 3.87 km/s', tip[0] + 8, tip[1], TK.ink2, MONO(12));
+    const pr = [SX + sv * es * e[0], SY - sv * es * e[1]];
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = TK.ink2; ctx.beginPath(); ctx.moveTo(tip[0], tip[1]); ctx.lineTo(pr[0], pr[1]); ctx.stroke(); ctx.setLineDash([]);
+    arrow(ctx, SX, SY, pr[0], pr[1], TK.fence, 3.5, 9);
+    label(ctx, `eᵀv_sat ${es.toFixed(0)} m/s`, pr[0] + (e[0] >= 0 ? -10 : 10), pr[1] + 18, TK.fence, MONO(12, 500), e[0] >= 0 ? 'right' : 'left');
+    // satellite body
+    ctx.fillStyle = TK.ink; ctx.save(); ctx.translate(SX, SY); ctx.rotate(-phi);
+    ctx.fillRect(-5, -5, 10, 10); ctx.fillStyle = TK.nav; ctx.fillRect(-17, -2, 10, 4); ctx.fillRect(7, -2, 10, 4); ctx.restore();
+    // drone velocity and projection
+    const su = 6;
+    arrow(ctx, cx, gy + 18, cx + su * ve, gy + 18, TK.vel, 3, 9);
+    label(ctx, `v_u ${ve.toFixed(1)} m/s (drawn ×${(su / sv).toFixed(0)})`, cx + su * ve + (ve >= 0 ? 10 : -10), gy + 18, TK.vel, MONO(12, 500), ve >= 0 ? 'left' : 'right');
+    const pu = [cx + su * eu * e[0], gy - su * eu * e[1]];
+    if (Math.abs(eu) > 0.05) arrow(ctx, cx, gy, pu[0], pu[1], TK.vel, 3, 8);
+    // drone
+    ctx.fillStyle = TK.ink; ctx.beginPath(); ctx.arc(cx, gy, 6, 0, 2 * Math.PI); ctx.fill();
+    ctx.strokeStyle = TK.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - 16, gy - 6); ctx.lineTo(cx + 16, gy - 6); ctx.stroke();
+  }
+  slides.doppler = { frame };
+})();
+
+// ======================================================================
+// 3. Sky plot + H
+// ======================================================================
+function drawSky(c, H, opts = {}) {
+  const { ctx, w, h } = canvas2d(c);
+  const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 26;
+  const rOf = el => R * (90 - el) / 90;
+  const pt = (az, el) => [cx + rOf(el) * Math.sin(az * D2R), cy - rOf(el) * Math.cos(az * D2R)];
+  // building mask
+  if (H > 0) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+    for (let az = 360; az >= 0; az -= 2) { const [x, y] = pt(az, maskEl(az, H)); az === 360 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.closePath();
+    ctx.fillStyle = TK.ink2; ctx.globalAlpha = 0.18; ctx.fill('evenodd'); ctx.globalAlpha = 1;
+  }
+  // rings & spokes
+  ctx.strokeStyle = TK.grid; ctx.lineWidth = 1;
+  for (const el of [0, 30, 60]) { ctx.beginPath(); ctx.arc(cx, cy, rOf(el), 0, 2 * Math.PI); ctx.stroke(); }
+  ctx.setLineDash([2, 4]); ctx.beginPath(); ctx.arc(cx, cy, rOf(PRM.MASK), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  for (const [az, t] of [[0, 'N'], [90, 'E'], [180, 'S'], [270, 'W']]) {
+    const [x, y] = pt(az, -8); label(ctx, t, x, y, TK.ink2, SANS(12, 700), 'center');
+  }
+  label(ctx, '30°', cx + 4, cy - rOf(30) + 8, TK.ink2, MONO(10));
+  label(ctx, '60°', cx + 4, cy - rOf(60) + 8, TK.ink2, MONO(10));
+  // street axis
+  ctx.setLineDash([6, 4]); ctx.strokeStyle = TK.fence; ctx.globalAlpha = 0.6;
+  const [a1, b1] = pt(STREET_AZ, 0), [a2, b2] = pt(STREET_AZ + 180, 0);
+  ctx.beginPath(); ctx.moveTo(a1, b1); ctx.lineTo(a2, b2); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+  label(ctx, 'street', a1 + 6, b1 + 10, TK.fence, MONO(10));
+  // satellites
+  for (const s of opts.sats) {
+    const [x, y] = pt(s.az, s.el);
+    const col = s.highlight ? TK.warn : s.nlos ? TK.warn : s.use ? TK.nav : TK.ink2;
+    ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, 2 * Math.PI);
+    s.use && !s.excluded ? ctx.fill() : ctx.stroke();
+    if (s.excluded) { ctx.beginPath(); ctx.moveTo(x - 7, y - 7); ctx.lineTo(x + 7, y + 7); ctx.moveTo(x + 7, y - 7); ctx.lineTo(x - 7, y + 7); ctx.stroke(); }
+    label(ctx, s.prn, x + 9, y - 8, s.use ? TK.ink : TK.ink2, MONO(11, 500));
+  }
+}
+
+(() => {
+  let mode = 'open';
+  function render() {
+    const H = CANYON_H[mode];
+    const sats = skyState(H, false);
+    const used = sats.filter(s => s.use);
+    drawSky($('#s3-c'), H, { sats });
+    const rows = used.map(hrow), w = used.map(sin2);
+    const { N } = normal(rows, w);
+    const Q = inv(N);
+    $('#s3-n').textContent = used.length + ' of ' + SKY.length;
+    $('#s3-dof').textContent = used.length - 4;
+    $('#s3-hdop').textContent = fmt(hdopOf(Q));
+    $('#s3-vdop').textContent = fmt(Math.sqrt(Q[2][2]));
+    const head = '<thead><tr><th>PRN</th><th>el</th><th>−e<sub>E</sub></th><th>−e<sub>N</sub></th><th>−e<sub>U</sub></th><th>1</th><th>w</th></tr></thead>';
+    const body = sats.map(s => {
+      const r = hrow(s);
+      return `<tr class="${s.use ? '' : 'off'}"><td>${s.prn}</td><td>${s.el}°</td><td>${r[0].toFixed(3)}</td><td>${r[1].toFixed(3)}</td><td>${r[2].toFixed(3)}</td><td>1</td><td>${sin2(s).toFixed(2)}</td></tr>`;
+    }).join('');
+    $('#s3-t').innerHTML = head + '<tbody>' + body + '</tbody>';
+  }
+  segGroup('#s3-seg', m => { mode = m; render(); });
+  slides['same-h'] = { enter: render, frame: () => drawSky($('#s3-c'), CANYON_H[mode], { sats: skyState(CANYON_H[mode], false) }) };
+})();
+
+// ======================================================================
+// 4. Velocity scatter + predicted ellipse
+// ======================================================================
+(() => {
+  const st = { playing: true, acc: 0, mode: 'open', trail: [] };
+  const VT = [8 * Math.sin(30 * D2R), 8 * Math.cos(30 * D2R)];
+  playButton('#s4-play', st);
+  segGroup('#s4-seg', m => { st.mode = m; st.trail = []; });
+  $('#s4-sig').addEventListener('input', () => { $('#s4-sig-o').textContent = (+$('#s4-sig').value).toFixed(2) + ' m/s'; st.trail = []; });
+  $('#s4-w').addEventListener('change', () => { st.trail = []; });
+
+  function model() {
+    const sats = skyState(CANYON_H[st.mode], false).filter(s => s.use);
+    const rows = sats.map(hrow);
+    const wTrue = sats.map(sin2);
+    const w = $('#s4-w').checked ? wTrue : sats.map(() => 1);
+    const sig = +$('#s4-sig').value;
+    const { N } = normal(rows, w);
+    const Q = inv(N);
+    // cov = sig^2 * A diag(1/wTrue) A^T, A = Q H^T W  (equals sig^2 Q when w = wTrue)
+    const A = Q.map(q => rows.map((r, i) => r.reduce((s, h, j) => s + q[j] * h, 0) * w[i]));
+    const cov = [0, 1].map(a => [0, 1].map(b => A[a].reduce((s, x, i) => s + x * A[b][i] / wTrue[i], 0) * sig * sig));
+    return { sats, rows, w, wTrue, sig, Q, cov };
+  }
+  function epoch(m) {
+    const z = m.sats.map((s, i) => {
+      const e = los(s);
+      return -(e[0] * VT[0] + e[1] * VT[1]) + PRM.DRIFT + gauss() * m.sig / Math.sqrt(m.wTrue[i]);
+    });
+    const sol = wls(m.rows, z, m.w);
+    st.trail.push([sol.x[0], sol.x[1]]);
+    if (st.trail.length > 150) st.trail.shift();
+  }
+  function frame(dt) {
+    const m = model();
+    if (st.playing) { st.acc += dt; while (st.acc > 1 / 8) { st.acc -= 1 / 8; epoch(m); } }
+    const { ctx, w, h } = canvas2d($('#s4-c'));
+    const span = 4, pad = 34;
+    const s = Math.min((w - 2 * pad) / (2 * span), (h - 2 * pad) / (2 * span));
+    const X = vE => w / 2 + (vE - VT[0]) * s, Y = vN => h / 2 - (vN - VT[1]) * s;
+    // grid on whole m/s
+    const e0 = VT[0] - span, e1 = VT[0] + span, n0 = VT[1] - span, n1 = VT[1] + span;
+    ctx.strokeStyle = TK.grid; ctx.lineWidth = 1;
+    ctx.strokeRect(X(e0), Y(n1), X(e1) - X(e0), Y(n0) - Y(n1));
+    for (let g = Math.ceil(e0); g <= e1; g++) {
+      ctx.beginPath(); ctx.moveTo(X(g), Y(n0)); ctx.lineTo(X(g), Y(n1)); ctx.stroke();
+      if (g % 2 === 0) label(ctx, String(g), X(g), Y(n0) + 14, TK.ink2, MONO(10), 'center');
+    }
+    for (let g = Math.ceil(n0); g <= n1; g++) {
+      ctx.beginPath(); ctx.moveTo(X(e0), Y(g)); ctx.lineTo(X(e1), Y(g)); ctx.stroke();
+      if (g % 2 === 0) label(ctx, String(g), X(e0) - 6, Y(g), TK.ink2, MONO(10), 'right');
+    }
+    label(ctx, 'v_E (m/s) →', X(VT[0] + span), Y(VT[1] - span) + 26, TK.ink2, MONO(10), 'right');
+    label(ctx, '↑ v_N (m/s)', X(VT[0] - span), Y(VT[1] + span) - 14, TK.ink2, MONO(10), 'left');
+    // predicted 95% ellipse
+    const [[a, b], [, c]] = m.cov;
+    const l1 = (a + c) / 2 + Math.sqrt(((a - c) / 2) ** 2 + b * b), l2 = (a + c) / 2 - Math.sqrt(((a - c) / 2) ** 2 + b * b);
+    const th = 0.5 * Math.atan2(2 * b, a - c), k95 = Math.sqrt(5.991);
+    ctx.save(); ctx.beginPath(); ctx.rect(pad - 6, pad - 6, w - 2 * pad + 12, h - 2 * pad + 12); ctx.clip();
+    ctx.beginPath(); ctx.ellipse(X(VT[0]), Y(VT[1]), k95 * Math.sqrt(l1) * s, k95 * Math.sqrt(Math.max(l2, 0)) * s, -th, 0, 2 * Math.PI);
+    ctx.fillStyle = TK.vel; ctx.globalAlpha = 0.08; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = TK.vel; ctx.lineWidth = 2; ctx.stroke();
+    // dots
+    st.trail.forEach((p, i) => {
+      ctx.globalAlpha = 0.25 + 0.75 * (i + 1) / st.trail.length;
+      ctx.fillStyle = TK.vel; ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), 2.6, 0, 2 * Math.PI); ctx.fill();
+    });
+    ctx.globalAlpha = 1; ctx.restore();
+    // truth
+    ctx.strokeStyle = TK.ink; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X(VT[0]) - 10, Y(VT[1])); ctx.lineTo(X(VT[0]) + 10, Y(VT[1])); ctx.moveTo(X(VT[0]), Y(VT[1]) - 10); ctx.lineTo(X(VT[0]), Y(VT[1]) + 10); ctx.stroke();
+    label(ctx, '+ true v: 8 m/s @ 030°', X(e1) - 4, Y(n1) + 12, TK.ink, MONO(11, 500), 'right');
+    label(ctx, '◯ predicted 95 %', X(e1) - 4, Y(n1) + 28, TK.vel, MONO(11, 500), 'right');
+    // readouts
+    const pred = Math.sqrt(a + c);
+    const rms = st.trail.length ? Math.sqrt(st.trail.reduce((q, p) => q + (p[0] - VT[0]) ** 2 + (p[1] - VT[1]) ** 2, 0) / st.trail.length) : NaN;
+    $('#s4-n').textContent = m.sats.length;
+    $('#s4-hdop').textContent = fmt(hdopOf(m.Q));
+    $('#s4-pred').textContent = fmt(pred) + ' m/s';
+    $('#s4-meas').textContent = st.trail.length > 20 ? fmt(rms) + ' m/s' : '…';
+  }
+  slides.solve = { frame };
+})();
+
+// ======================================================================
+// 5. Residual chi-square test with an injected reflection
+// ======================================================================
+(() => {
+  const st = { playing: true, acc: 0, last: null };
+  const VT = [8 * Math.sin(30 * D2R), 8 * Math.cos(30 * D2R)];
+  const sats = skyState(0, false).filter(s => s.use);
+  const sel = $('#s5-sat');
+  sats.forEach(s => { const o = document.createElement('option'); o.value = s.prn; o.textContent = `${s.prn} (el ${s.el}°)`; sel.appendChild(o); });
+  sel.value = 'G09';
+  playButton('#s5-play', st);
+  $('#s5-bias').addEventListener('input', () => { $('#s5-bias-o').textContent = (+$('#s5-bias').value).toFixed(2) + ' m/s'; epoch(); });
+  sel.addEventListener('change', epoch);
+  $('#s5-fde').addEventListener('change', epoch);
+
+  function epoch() {
+    const bias = +$('#s5-bias').value, bad = sel.value;
+    const rows = sats.map(hrow), w = sats.map(sin2);
+    const z = sats.map((s, i) => {
+      const e = los(s);
+      return -(e[0] * VT[0] + e[1] * VT[1]) + PRM.DRIFT + gauss() * PRM.SIGMA_RR / Math.sqrt(w[i]) + (s.prn === bad ? bias : 0);
+    });
+    const all = wls(rows, z, w);
+    const stdAll = stdResiduals(rows, w, all).map(v => v / PRM.SIGMA_RR);
+    const res = $('#s5-fde').checked ? fde(rows, z, w, PRM.SIGMA_RR) : fde(rows, z, w, PRM.SIGMA_RR, 0);
+    const T0 = w.reduce((s, wi, i) => s + wi * all.r[i] ** 2, 0) / PRM.SIGMA_RR ** 2;
+    st.last = { stdAll, res, T0, thr0: chi2thr(sats.length - 4), e0: Math.hypot(all.x[0] - VT[0], all.x[1] - VT[1]), e1: Math.hypot(res.sol.x[0] - VT[0], res.sol.x[1] - VT[1]), bad };
+  }
+  function frame(dt) {
+    if (st.playing) { st.acc += dt; while (st.acc > 0.6) { st.acc -= 0.6; epoch(); } }
+    if (!st.last) epoch();
+    const L = st.last, ex = new Set(L.res.excluded.map(i => sats[i].prn));
+    const { ctx, w, h } = canvas2d($('#s5-c'));
+    const padL = 44, padB = 44, top = 18, meterH = 36;
+    const plotH = h - padB - top - meterH - 30;
+    const maxS = Math.max(6, ...L.stdAll) * 1.1;
+    const bw = (w - padL - 16) / sats.length;
+    const Y = v => top + plotH - v / maxS * plotH;
+    ctx.strokeStyle = TK.grid; ctx.lineWidth = 1;
+    for (let v = 0; v <= maxS; v += 2) { ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(w - 16, Y(v)); ctx.stroke(); label(ctx, v.toFixed(0) + 'σ', padL - 6, Y(v), TK.ink2, MONO(10), 'right'); }
+    label(ctx, 'standardised residual |r_i| / σ_i', padL, top - 6, TK.ink2, MONO(11));
+    sats.forEach((s, i) => {
+      const x = padL + i * bw + bw * 0.2, bwid = bw * 0.6, v = L.stdAll[i];
+      const isBad = s.prn === L.bad && +$('#s5-bias').value > 0;
+      ctx.fillStyle = ex.has(s.prn) ? TK.warn : isBad ? TK.warn : TK.vel;
+      ctx.globalAlpha = ex.has(s.prn) ? 0.35 : 1;
+      ctx.fillRect(x, Y(v), bwid, Y(0) - Y(v));
+      ctx.globalAlpha = 1;
+      if (ex.has(s.prn)) { ctx.strokeStyle = TK.warn; ctx.lineWidth = 2; ctx.strokeRect(x, Y(v), bwid, Y(0) - Y(v)); label(ctx, 'out', x + bwid / 2, Y(v) - 9, TK.warn, MONO(10, 500), 'center'); }
+      label(ctx, s.prn, x + bwid / 2, Y(0) + 13, TK.ink2, MONO(10), 'center');
+    });
+    // chi-square meter: SSE before any exclusion and after
+    const my = h - meterH - 8, mx0 = padL, mx1 = w - 16;
+    const fin = L.res.steps.length ? L.res.steps[L.res.steps.length - 1] : null;
+    const scale = Math.max(L.thr0 * 1.6, L.T0 * 1.05);
+    const MX = v => mx0 + Math.min(v, scale) / scale * (mx1 - mx0);
+    ctx.fillStyle = TK.grid; ctx.globalAlpha = 0.5; ctx.fillRect(mx0, my, mx1 - mx0, 12); ctx.globalAlpha = 1;
+    ctx.fillStyle = L.T0 > L.thr0 ? TK.stop : TK.ok; ctx.fillRect(mx0, my, MX(L.T0) - mx0, 12);
+    if (fin && L.res.excluded.length) { ctx.fillStyle = fin.T > fin.thr ? TK.stop : TK.ok; ctx.fillRect(mx0, my + 16, MX(fin.T) - mx0, 8); }
+    ctx.strokeStyle = TK.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(MX(L.thr0), my - 6); ctx.lineTo(MX(L.thr0), my + 28); ctx.stroke();
+    label(ctx, `threshold χ²(${sats.length - 4}) = ${L.thr0.toFixed(1)}`, MX(L.thr0) + 6, my - 8, TK.ink, MONO(11, 500));
+    label(ctx, 'SSE', mx0 - 6, my + 6, TK.ink2, MONO(10), 'right');
+    // readouts
+    const passed = L.res.passed;
+    setPill($('#s5-state'), L.res.excluded.length && passed ? 'EXCLUDED' : passed ? 'PASS' : 'FAIL');
+    $('#s5-t').textContent = `${L.T0.toFixed(1)} / ${L.thr0.toFixed(1)}` + (L.res.excluded.length && fin ? ` → ${fin.T.toFixed(1)} / ${fin.thr.toFixed(1)}` : '');
+    $('#s5-ex').textContent = L.res.excluded.length ? [...ex].join(', ') : 'none';
+    $('#s5-e0').textContent = fmt(L.e0) + ' m/s';
+    $('#s5-e1').textContent = fmt(L.e1) + ' m/s';
+  }
+  slides.residuals = { frame, enter: epoch };
+})();
+
+// ======================================================================
+// 6. Time series: raw Doppler LS vs LS with IMU prior
+// ======================================================================
+(() => {
+  const TEND = 90, ACC_STEPS = [0.05, 0.1, 0.2, 0.3, 0.5, 1, 2, 5];
+  const st = { playing: true, cursor: 0, hold: 0, series: null, flt: null, seed: 11 };
+  playButton('#s6-play', st);
+  function truthV(t) {
+    let spd = 8, hdg = 30;
+    if (t < 8) spd = t;
+    else if (t < 60) hdg = 30;
+    else if (t < 66) hdg = 30 + 15 * (t - 60);
+    else hdg = 120;
+    if (t >= 82) spd = Math.max(0, 8 - (t - 82));
+    return [spd * Math.sin(hdg * D2R), spd * Math.cos(hdg * D2R), 0];
+  }
+  const inCanyon = t => t >= 35 && t < 62;
+  const underpass = t => t >= 47 && t < 53;
+  function generate() {
+    rand = mulberry32(st.seed);
+    const out = [];
+    for (let t = 1; t <= TEND; t++) {
+      let sats = skyState(inCanyon(t) ? 30 : 0, inCanyon(t)).filter(s => s.use);
+      if (underpass(t)) sats = sats.filter(s => !s.nlos).sort((a, b) => b.el - a.el).slice(0, 3);
+      const v = truthV(t), v0 = truthV(t - 1);
+      const rows = sats.map(hrow), w = sats.map(sin2);
+      const z = sats.map((s, i) => {
+        const e = los(s);
+        return -(e[0] * v[0] + e[1] * v[1] + e[2] * v[2]) + PRM.DRIFT + gauss() * PRM.SIGMA_RR / Math.sqrt(w[i]) + (s.nlos ? s.refl : 0);
+      });
+      const imu = [0, 1, 2].map(k => (v[k] - v0[k]) + gauss() * 0.15);
+      let raw = null, keep = rows.map((_, i) => i);
+      if (rows.length >= 4) { const r = fde(rows, z, w, PRM.SIGMA_RR); raw = r.sol.x; keep = r.idx; }
+      out.push({ t, v, rows, z, w, imu, raw, keep, n: rows.length });
+    }
+    return out;
+  }
+  function runFilter(series, sa) {
+    let x = null, P = null;
+    return series.map(ep => {
+      if (x) {
+        x = [x[0] + ep.imu[0], x[1] + ep.imu[1], x[2] + ep.imu[2], x[3]];
+        P = P.map((r, i) => r.map((v, j) => v + (i === j ? (i < 3 ? sa * sa : PRM.SIGMA_DRIFT ** 2) : 0)));
+      }
+      const H = ep.keep.map(i => ep.rows[i]), z = ep.keep.map(i => ep.z[i]);
+      const rinv = ep.keep.map(i => ep.w[i] / PRM.SIGMA_RR ** 2);
+      if (!x) {
+        if (H.length >= 4) { const { N, b } = normal(H, rinv, z); P = inv(N); x = matvec(P, b); }
+      } else {
+        ({ x, P } = lsPrior(H, z, rinv, x, P));
+      }
+      return x ? { v: x.slice(0, 3), s: Math.sqrt(P[0][0] + P[1][1]) } : null;
+    });
+  }
+  function refilter() {
+    const sa = ACC_STEPS[+$('#s6-acc').value];
+    $('#s6-acc-o').textContent = sa.toFixed(2) + ' m/s²';
+    st.flt = runFilter(st.series, sa);
+    const err = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const rms = arr => arr.length ? Math.sqrt(arr.reduce((s, x) => s + x * x, 0) / arr.length) : NaN;
+    const rawE = [], fltE = [], rawC = [], fltC = [];
+    let gaps = 0;
+    st.series.forEach((ep, i) => {
+      if (ep.raw) { rawE.push(err(ep.raw, ep.v)); if (inCanyon(ep.t)) rawC.push(err(ep.raw, ep.v)); } else gaps++;
+      if (st.flt[i]) { fltE.push(err(st.flt[i].v, ep.v)); if (inCanyon(ep.t)) fltC.push(err(st.flt[i].v, ep.v)); }
+    });
+    $('#s6-raw').textContent = fmt(rms(rawE)) + ' m/s';
+    $('#s6-flt').textContent = fmt(rms(fltE)) + ' m/s';
+    $('#s6-can').textContent = `${fmt(rms(rawC))} / ${fmt(rms(fltC))}`;
+    $('#s6-gap').textContent = gaps + ' of ' + TEND;
+  }
+  function regen() { st.series = generate(); refilter(); }
+  $('#s6-acc').addEventListener('input', refilter);
+  $('#s6-new').addEventListener('click', () => { st.seed += 1; regen(); });
+  regen();
+
+  function panel(ctx, x0, y0, pw, ph, comp, name) {
+    const lo = -6, hi = 10;
+    const X = t => x0 + t / TEND * pw, Y = v => y0 + ph - (v - lo) / (hi - lo) * ph;
+    // canyon / underpass bands
+    ctx.fillStyle = TK.ink2; ctx.globalAlpha = 0.10; ctx.fillRect(X(35), y0, X(62) - X(35), ph);
+    ctx.globalAlpha = 0.14; ctx.fillRect(X(47), y0, X(53) - X(47), ph); ctx.globalAlpha = 1;
+    ctx.strokeStyle = TK.grid; ctx.lineWidth = 1;
+    for (let v = lo; v <= hi; v += 4) { ctx.beginPath(); ctx.moveTo(x0, Y(v)); ctx.lineTo(x0 + pw, Y(v)); ctx.stroke(); label(ctx, String(v), x0 - 6, Y(v), TK.ink2, MONO(10), 'right'); }
+    label(ctx, name, x0 + 4, y0 + 10, TK.ink, MONO(11, 500));
+    const tc = st.cursor;
+    // truth
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = TK.ink; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let t = 0; t <= TEND; t += 0.5) { const v = truthV(t)[comp]; t ? ctx.lineTo(X(t), Y(v)) : ctx.moveTo(X(t), Y(v)); }
+    ctx.stroke(); ctx.setLineDash([]);
+    // filtered band + line
+    const pts = st.series.map((ep, i) => [ep.t, st.flt[i]]).filter(p => p[1] && p[0] <= tc);
+    if (pts.length > 1) {
+      ctx.fillStyle = TK.vel; ctx.globalAlpha = 0.15; ctx.beginPath();
+      pts.forEach(([t, f], i) => { const y = Y(f.v[comp] + 2 * f.s / Math.SQRT2); i ? ctx.lineTo(X(t), y) : ctx.moveTo(X(t), y); });
+      for (let i = pts.length - 1; i >= 0; i--) { const [t, f] = pts[i]; ctx.lineTo(X(t), Y(f.v[comp] - 2 * f.s / Math.SQRT2)); }
+      ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = TK.vel; ctx.lineWidth = 2.5; ctx.beginPath();
+      pts.forEach(([t, f], i) => { i ? ctx.lineTo(X(t), Y(f.v[comp])) : ctx.moveTo(X(t), Y(f.v[comp])); });
+      ctx.stroke();
+    }
+    // raw dots
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, pw, ph); ctx.clip();
+    st.series.forEach(ep => {
+      if (ep.t > tc || !ep.raw) return;
+      ctx.fillStyle = TK.nav; ctx.beginPath(); ctx.arc(X(ep.t), Y(ep.raw[comp]), 2.6, 0, 2 * Math.PI); ctx.fill();
+    });
+    ctx.restore();
+    // cursor
+    ctx.strokeStyle = TK.ink2; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(tc), y0); ctx.lineTo(X(tc), y0 + ph); ctx.stroke();
+  }
+  function frame(dt) {
+    if (st.playing) {
+      if (st.cursor >= TEND) { st.hold += dt; if (st.hold > 2.5) { st.cursor = 0; st.hold = 0; } }
+      else st.cursor = Math.min(TEND, st.cursor + dt * 5);
+    }
+    const { ctx, w, h } = canvas2d($('#s6-c'));
+    const x0 = 34, pw = w - x0 - 12, top = 30, gap = 22, ph = (h - top - gap - 40) / 2;
+    label(ctx, 'deep canyon: 5 LOS + 2 NLOS', x0 + 35 / TEND * pw + 4, 12, TK.ink2, MONO(10));
+    label(ctx, 'overpass: 3 sats', x0 + 47 / TEND * pw + 4, 24, TK.ink2, MONO(10));
+    panel(ctx, x0, top, pw, ph, 0, 'v_E (m/s)');
+    panel(ctx, x0, top + ph + gap, pw, ph, 1, 'v_N (m/s)');
+    const yb = top + 2 * ph + gap;
+    for (let t = 0; t <= TEND; t += 15) label(ctx, t + ' s', x0 + t / TEND * pw, yb + 12, TK.ink2, MONO(10), 'center');
+    // legend
+    const ly = h - 10; let lx = x0;
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = TK.ink; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx + 22, ly); ctx.stroke(); ctx.setLineDash([]);
+    label(ctx, 'truth', lx + 28, ly, TK.ink2, MONO(11)); lx += 80;
+    ctx.fillStyle = TK.nav; ctx.beginPath(); ctx.arc(lx + 4, ly, 3, 0, 2 * Math.PI); ctx.fill();
+    label(ctx, 'Doppler LS + χ² test', lx + 12, ly, TK.ink2, MONO(11)); lx += 168;
+    ctx.strokeStyle = TK.vel; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx + 22, ly); ctx.stroke();
+    label(ctx, 'LS + IMU prior (±2σ)', lx + 28, ly, TK.ink2, MONO(11));
+  }
+  slides.prior = { frame };
+})();
+
+// ======================================================================
+// 7. Closed loop on a top-down map
+// ======================================================================
+(() => {
+  // along-track / cross-track frame: along = street heading 030°, cross = to the right
+  const FENCE = [[240, -120], [240, 90], [330, 140], [420, 60], [400, -130]];   // (along, cross) m
+  const UA = [Math.sin(30 * D2R), Math.cos(30 * D2R)], UC = [Math.cos(30 * D2R), -Math.sin(30 * D2R)];
+  const enu2ac = (E, N) => [E * UA[0] + N * UA[1], E * UC[0] + N * UC[1]];
+  const st = { playing: true, mode: 'open' };
+  playButton('#s7-play', st);
+  segGroup('#s7-seg', m => { st.mode = m; reset(); });
+  $('#s7-restart').addEventListener('click', reset);
+
+  function sdist(p) {   // signed distance (+ outside the keep-out polygon) and unit normal away from it
+    let best = Infinity, q = null, inside = false;
+    for (let i = 0; i < FENCE.length; i++) {
+      const a = FENCE[i], b = FENCE[(i + 1) % FENCE.length];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy)));
+      const c = [a[0] + t * dx, a[1] + t * dy], d = Math.hypot(p[0] - c[0], p[1] - c[1]);
+      if (d < best) { best = d; q = c; }
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) * dx / dy) inside = !inside;
+    }
+    const n = [(p[0] - q[0]) / (best || 1), (p[1] - q[1]) / (best || 1)];
+    return { d: inside ? -best : best, n: inside ? [-n[0], -n[1]] : n, q };
+  }
+  function reset() {
+    rand = mulberry32(77);
+    Object.assign(st, { t: 0, acc: 0, p: [0, 0], v: [0, 0], vcmd: [0, 0], next: 0, gm: {}, est: null, trail: [], track: [] });
+  }
+  reset();
+
+  function gnssEpoch() {
+    const sats = skyState(CANYON_H[st.mode], false).filter(s => s.use);
+    if (sats.length < 4) { st.est = { state: 'NO-FIX' }; st.vcmd = [0, 0]; return; }
+    const rows = sats.map(hrow), w = sats.map(sin2);
+    const phi = Math.exp(-1 / 8);
+    const eps = sats.map((s, i) => {   // time-correlated pseudorange error
+      const sig = PRM.SIGMA_UERE / Math.sqrt(w[i]);
+      const prev = st.gm[s.prn] ?? gauss() * sig;
+      return (st.gm[s.prn] = phi * prev + Math.sqrt(1 - phi * phi) * sig * gauss());
+    });
+    const pos = wls(rows, eps, w);
+    const rre = sats.map((s, i) => gauss() * PRM.SIGMA_RR / Math.sqrt(w[i]));
+    const vel = wls(rows, rre, w);
+    const hd = hdopOf(pos.Q), dof = sats.length - 4;
+    const T = dof > 0 ? w.reduce((s, wi, i) => s + wi * pos.r[i] ** 2, 0) / PRM.SIGMA_UERE ** 2 : NaN;
+    const verified = dof >= PRM.MIN_DOF && T <= chi2thr(dof);
+    let sh = hd * PRM.SIGMA_UERE;
+    if (!verified) sh = Math.max(sh, PRM.SIGMA_FALLBACK);
+    const pe = enu2ac(pos.x[0], pos.x[1]), ve = enu2ac(vel.x[0], vel.x[1]);
+    const ph = [st.p[0] + pe[0], st.p[1] + pe[1]], vh = [st.v[0] + ve[0], st.v[1] + ve[1]];
+    const f = sdist(ph);
+    const vclose = Math.max(0, -(vh[0] * f.n[0] + vh[1] * f.n[1]));
+    const ks = PRM.K * sh;
+    const rbuf = PRM.R_DRONE + ks + vclose * PRM.DT;
+    const vcap = Math.max(0, Math.min(PRM.V_MAX, (f.d - PRM.R_DRONE - ks) / PRM.DT));
+    const state = f.d <= PRM.R_DRONE + ks ? 'STOP' : f.d < rbuf ? 'SLOW' : 'CLEAR';
+    // safe_velocity: hover on STOP, else cut the closing part to v_cap
+    let cmd = [PRM.V_MAX, 0];
+    if (state === 'STOP') cmd = [0, 0];
+    else {
+      const closing = -(cmd[0] * f.n[0] + cmd[1] * f.n[1]);
+      if (closing > vcap) cmd = [cmd[0] + (closing - vcap) * f.n[0], cmd[1] + (closing - vcap) * f.n[1]];
+    }
+    st.vcmd = cmd;
+    st.est = { state, ph, vh, sh, ks, rbuf, vcap, vclose, d: f.d, q: f.q, n: sats.length, hd, verified };
+    st.trail.push(ph); if (st.trail.length > 40) st.trail.shift();
+  }
+  function step(dt) {
+    const h = 0.02;
+    st.acc = (st.acc || 0) + dt;
+    for (; st.acc >= h; st.acc -= h) {
+      st.t += h;
+      if (st.t >= st.next) { st.next += 1.0; gnssEpoch(); }
+      for (let j = 0; j < 2; j++) st.v[j] += (st.vcmd[j] - st.v[j]) / 0.8 * h;
+      st.p[0] += st.v[0] * h; st.p[1] += st.v[1] * h;
+    }
+    st.track.push([...st.p]); if (st.track.length > 4000) st.track.shift();
+  }
+  function frame(dt) {
+    if (st.playing) step(Math.min(dt, 0.05) * 2);
+    const { ctx, w, h } = canvas2d($('#s7-c'));
+    const A0 = -25, A1 = 290, C0 = -115, C1 = 115;
+    const s = Math.min((h - 20) / (A1 - A0), (w - 20) / (C1 - C0));
+    const ox = w / 2, oy = h - 10;
+    const P = ([a, c]) => [ox + c * s, oy - (a - A0) * s];
+    // buildings
+    const Hb = CANYON_H[st.mode];
+    if (Hb > 0) {
+      ctx.fillStyle = TK.ink2; ctx.globalAlpha = Hb > 20 ? 0.32 : 0.18;
+      for (const side of [-1, 1]) for (let a = A0; a < 225; a += 60) {
+        const [x1, y1] = P([a + 4, side > 0 ? HALF_W : -C1]);
+        const [x2, y2] = P([a + 52, side > 0 ? C1 : -HALF_W]);
+        ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+      }
+      ctx.globalAlpha = 1;
+    }
+    // street edges
+    ctx.strokeStyle = TK.grid; ctx.lineWidth = 1;
+    for (const c of [-HALF_W, HALF_W]) { const [x1, y1] = P([A0, c]), [x2, y2] = P([A1, c]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+    // fence: hatched restricted zone
+    ctx.save(); ctx.beginPath();
+    FENCE.forEach((p, i) => { const [x, y] = P(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.closePath(); ctx.strokeStyle = TK.fence; ctx.lineWidth = 2.5; ctx.stroke(); ctx.clip();
+    ctx.globalAlpha = 0.35; ctx.lineWidth = 1;
+    for (let k = -h; k < w + h; k += 10) { ctx.beginPath(); ctx.moveTo(k, 0); ctx.lineTo(k + h, h); ctx.stroke(); }
+    ctx.restore(); ctx.globalAlpha = 1;
+    const [fx, fy] = P([255, 0]);
+    label(ctx, 'RESTRICTED ZONE (example)', fx, fy - 8, TK.fence, SANS(12, 700), 'center', 'bottom');
+    // true track
+    ctx.strokeStyle = TK.ink; ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5; ctx.beginPath();
+    st.track.forEach((p, i) => { const [x, y] = P(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); ctx.globalAlpha = 1;
+    const E = st.est;
+    if (E && E.ph) {
+      // estimated fixes
+      st.trail.forEach((p, i) => { const [x, y] = P(p); ctx.fillStyle = TK.nav; ctx.globalAlpha = 0.15 + 0.6 * i / st.trail.length; ctx.beginPath(); ctx.arc(x, y, 2.2, 0, 2 * Math.PI); ctx.fill(); });
+      ctx.globalAlpha = 1;
+      const [ex, ey] = P(E.ph);
+      // buffer and k*sigma circles
+      ctx.beginPath(); ctx.arc(ex, ey, E.rbuf * s, 0, 2 * Math.PI);
+      ctx.fillStyle = TK.fence; ctx.globalAlpha = 0.08; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = TK.fence; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = TK.nav; ctx.beginPath(); ctx.arc(ex, ey, E.ks * s, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+      // distance to fence
+      const [qx, qy] = P(E.q);
+      ctx.strokeStyle = TK.ink2; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(qx, qy); ctx.stroke(); ctx.setLineDash([]);
+      label(ctx, `d ${E.d.toFixed(0)} m`, (ex + qx) / 2 + 8, (ey + qy) / 2, TK.ink2, MONO(11, 500));
+      ctx.fillStyle = TK.nav; ctx.beginPath(); ctx.arc(ex, ey, 4.5, 0, 2 * Math.PI); ctx.fill();
+      // velocity estimate arrow
+      arrow(ctx, ex, ey, ex + E.vh[1] * s * 2, ey - E.vh[0] * s * 2, TK.vel, 2.5, 8);
+    }
+    // true drone
+    const [tx, ty] = P(st.p);
+    ctx.strokeStyle = TK.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(tx, ty, 6, 0, 2 * Math.PI); ctx.stroke();
+    // legend
+    ctx.fillStyle = TK.panel; ctx.globalAlpha = 0.88; ctx.fillRect(4, 4, 104, 70); ctx.globalAlpha = 1;
+    let ly = 14;
+    const lg = (draw, txt) => { draw(14, ly); label(ctx, txt, 28, ly, TK.ink2, MONO(11)); ly += 16; };
+    lg((x, y) => { ctx.strokeStyle = TK.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.stroke(); }, 'true drone');
+    lg((x, y) => { ctx.fillStyle = TK.nav; ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.fill(); }, 'SPP fix');
+    lg((x, y) => { ctx.setLineDash([4, 3]); ctx.strokeStyle = TK.nav; ctx.beginPath(); ctx.arc(x, y, 6, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]); }, 'k·σ_h');
+    lg((x, y) => { ctx.strokeStyle = TK.fence; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 6, 0, 2 * Math.PI); ctx.stroke(); }, 'r_buffer');
+    label(ctx, `t = ${st.t.toFixed(0)} s`, w - 10, 14, TK.ink2, MONO(11), 'right');
+    // readouts
+    if (E) {
+      setPill($('#s7-state'), E.state);
+      if (E.state === 'NO-FIX') { setPill($('#s7-fix'), 'NO-FIX'); return; }
+      setPill($('#s7-fix'), E.verified ? 'VERIFIED' : 'NOT VERIFIED');
+      $('#s7-n').textContent = `${E.n} · ${E.hd.toFixed(2)}`;
+      $('#s7-sh').textContent = E.sh.toFixed(1) + ' m';
+      $('#s7-d').textContent = E.d.toFixed(1) + ' m';
+      $('#s7-v').textContent = E.vclose.toFixed(2) + ' m/s';
+      $('#s7-rb').textContent = E.rbuf.toFixed(1) + ' m';
+      $('#s7-cap').textContent = E.vcap.toFixed(2) + ' m/s';
+    }
+  }
+  slides.loop = { frame };
+})();
+
+// ======================================================================
+// Deck navigation (#hash per slide)
+// ======================================================================
+const order = $$('.slide').map(s => s.id);
+const ticks = $('#ticks');
+order.forEach((id, i) => {
+  const b = document.createElement('button');
+  b.className = 'tick'; b.type = 'button'; b.textContent = i + 1;
+  b.title = $('#' + id).dataset.title; b.setAttribute('aria-label', `Slide ${i + 1}: ${b.title}`);
+  b.addEventListener('click', () => show(i));
+  ticks.appendChild(b);
+});
+let cur = -1;
+function show(i) {
+  i = Math.max(0, Math.min(order.length - 1, i));
+  if (i === cur) return;
+  cur = i;
+  $$('.slide').forEach((s, k) => { s.hidden = k !== i; });
+  $$('.tick').forEach((t, k) => (k === i ? t.setAttribute('aria-current', 'step') : t.removeAttribute('aria-current')));
+  $('#where').textContent = `${i + 1} / ${order.length} · ${$('#' + order[i]).dataset.title}`;
+  $('#prev').disabled = i === 0; $('#next').disabled = i === order.length - 1;
+  try { history.replaceState(null, '', '#' + order[i]); } catch (e) { /* sandboxed */ }
+  readTokens();
+  slides[order[i]]?.enter?.();
+  slides[order[i]]?.frame?.(0);
+}
+$('#prev').addEventListener('click', () => show(cur - 1));
+$('#next').addEventListener('click', () => show(cur + 1));
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (['ArrowRight', 'PageDown'].includes(e.key) || (e.key === ' ' && !e.target.matches('button'))) { e.preventDefault(); show(cur + 1); }
+  else if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); show(cur - 1); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(order.length - 1);
+});
+window.addEventListener('hashchange', () => { const k = order.indexOf(location.hash.slice(1)); if (k >= 0) show(k); });
+const start = order.indexOf(location.hash.slice(1));
+readTokens();
+show(start >= 0 ? start : 0);
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  readTokens();
+  slides[order[cur]]?.frame?.(dt);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+window.__deck = { wls, lsPrior, fde, chi2thr, normal, inv, skyState, hrow, sin2, hdopOf };
+})();
+</script>
+</body>
+</html>
