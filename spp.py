@@ -570,7 +570,12 @@ class SPP:
 
         if self.vf is not None:
             m = vmask
-            self.vf.update(Hv[m], zv[m], wv[m], P.SIGMA_RR)
+            # Doppler rows that could not be verified (too little redundancy, or
+            # a fault left in) get sigma x UNVERIFIED_RR_SCALE: the IMU prior
+            # then carries v instead of following NLOS-biased Doppler.
+            vel_ok = sol.vel_test.passed is True and sol.vel_test.dof >= P.MIN_DOF_INTEGRITY
+            sig = P.SIGMA_RR if vel_ok else P.SIGMA_RR * P.UNVERIFIED_RR_SCALE
+            self.vf.update(Hv[m], zv[m], wv[m], sig)
             if self.vf.ready:
                 sol.v_enu = self.vf.x[:3].copy()
                 sol.clock_drift = float(self.vf.x[3])

@@ -1,19 +1,27 @@
 """
 boundary.py - fences as lat/lon polygons -> local ENU metres -> a precomputed
-signed distance field, plus the buffer test that turns spp.py output into a
-decision.
+signed distance field, plus the decision logic that turns spp.py output into
+a velocity command, including how the drone is returned to safety.
 
-    d        = signed distance from p to the nearest fence edge (+ = allowed side)
+    d        = signed distance from p_hat to the nearest fence edge (+ = allowed side)
     r_buffer = R_DRONE + K_SIGMA * sigma_h + v_close * DT
-    v_cap    = (d - R_DRONE - K_SIGMA * sigma_h) / DT
+    v_allow  = clip((d - R_DRONE - K_SIGMA * sigma_h) / DT, -V_RETURN, V_MAX)
 
-v_close is the velocity component towards the fence, -v . n_hat, where n_hat
-is the field gradient (it points away from the fence). States:
+v_allow is the signed velocity field: the fastest the drone may close on the
+nearest fence. Positive means "approach at most this fast", negative means
+"you are inside the stop line, move away at this speed". The two are the same
+inequality, d >= r_buffer, solved for the closing speed.
 
-    CLEAR    d >= r_buffer                     fly as commanded
-    SLOW     d <  r_buffer  (v_close > v_cap)  cap the closing speed at v_cap
-    STOP     d <= R_DRONE + K_SIGMA * sigma_h  confidence disc already touches: hover
-    NO-FIX   spp.py has no position            hover
+Verified fix (chi2 passed with enough redundancy) - n_hat is trusted:
+    CLEAR    v_close <= v_allow            pilot command passes
+    SLOW     0 <= v_allow < v_close        closing part cut to v_allow, sideways kept
+    RETURN   v_allow < 0                   closing part forced to v_allow: pushed out along n_hat
+
+Fix not verified (sigma_h = fallback) - n_hat is NOT trusted:
+    CLEAR / SLOW                           whole speed |v| capped at v_allow
+    RETRACE  v_allow < 0                   fly back to the last verified fix, steering by
+                                           dead reckoning with Doppler velocity
+    HOLD     no fix, or nothing to retrace hover
 
 The fences below are EXAMPLES placed around the default origin so the demo
 has something to fly at. They are not real eSUA zones: export the real
@@ -177,100 +185,167 @@ class DistanceField:
 
 
 # --------------------------------------------------------------------------
-# Closing the loop: buffer, speed cap, state
+# Closing the loop: buffer, signed speed field, state, command
 # --------------------------------------------------------------------------
 def buffer_radius(sigma_h, v_close):
     return P.R_DRONE + P.K_SIGMA * sigma_h + max(v_close, 0.0) * P.DT
 
 
-def speed_cap(d, sigma_h):
-    return float(np.clip((d - P.R_DRONE - P.K_SIGMA * sigma_h) / P.DT, 0.0, P.V_MAX))
+def allowed_closing_speed(d, sigma_h):
+    """Signed speed field: + max approach speed, - required retreat speed."""
+    return float(np.clip((d - P.R_DRONE - P.K_SIGMA * sigma_h) / P.DT, -P.V_RETURN, P.V_MAX))
 
 
 @dataclass
 class FenceCheck:
-    state: str             # CLEAR / SLOW / STOP / NO-FIX
+    state: str             # CLEAR / SLOW / RETURN / RETRACE / HOLD
     d: float               # signed distance from the estimated position (m)
-    n_hat: np.ndarray      # unit normal, away from the fence
-    v_close: float         # m/s towards the fence
+    n_hat: np.ndarray      # unit normal, away from the nearest fence
+    v_close: float         # m/s: closing speed (verified) or |v| (not verified)
     sigma_h: float
     r_buffer: float
-    v_cap: float           # max allowed closing speed (m/s)
+    v_allow: float         # signed allowed closing speed (m/s)
+    verified: bool         # True: n_hat is trusted
 
 
 def check(field: DistanceField, sol: NavSolution) -> FenceCheck:
     if not sol.ok:
-        return FenceCheck("NO-FIX", float("nan"), np.zeros(2), 0.0, float("nan"),
-                          float("nan"), 0.0)
+        return FenceCheck("HOLD", float("nan"), np.zeros(2), 0.0, float("nan"),
+                          float("nan"), 0.0, False)
     p = sol.p_enu[:2]
     d = field.distance(p)
     n_hat = field.normal(p)
     v = sol.v_enu[:2] if np.all(np.isfinite(sol.v_enu[:2])) else np.zeros(2)
-    v_close = max(0.0, -float(v @ n_hat)) if P.USE_CLOSING_SPEED else float(np.hypot(*v))
-    r_buf = buffer_radius(sol.sigma_h, v_close)
-    v_cap = speed_cap(d, sol.sigma_h)
-    if d <= P.R_DRONE + P.K_SIGMA * sol.sigma_h:
-        state = "STOP"
-    elif d < r_buf:
+    verified = bool(sol.integrity)
+    if verified and P.USE_CLOSING_SPEED:
+        v_close = max(0.0, -float(v @ n_hat))
+    else:                                      # direction not trusted: use the full speed
+        v_close = float(np.hypot(*v))
+    v_allow = allowed_closing_speed(d, sol.sigma_h)
+    if v_allow < 0.0:
+        state = "RETURN" if verified else "RETRACE"
+    elif v_allow < P.V_MAX and v_close > v_allow:
         state = "SLOW"
     else:
         state = "CLEAR"
-    return FenceCheck(state, d, n_hat, v_close, sol.sigma_h, r_buf, v_cap)
+    return FenceCheck(state, d, n_hat, v_close, sol.sigma_h,
+                      buffer_radius(sol.sigma_h, v_close), v_allow, verified)
 
 
-def limit_velocity(v_cmd, n_hat, v_cap):
-    """Remove the part of the closing speed above v_cap; keep the sideways part."""
+def limit_velocity(v_cmd, n_hat, v_allow):
+    """
+    Enforce closing speed <= v_allow along n_hat; keep the sideways part.
+    With v_allow < 0 this pushes the drone out at |v_allow|.
+    """
     v_cmd = np.asarray(v_cmd, dtype=float).copy()
     closing = -float(v_cmd[:2] @ n_hat)
-    if closing > v_cap:
-        v_cmd[:2] += (closing - v_cap) * n_hat
+    if closing > v_allow:
+        v_cmd[:2] += (closing - v_allow) * n_hat
+    return v_cmd
+
+
+def cap_speed(v_cmd, v_max):
+    """Scale the whole horizontal velocity down to v_max (direction unchanged)."""
+    v_cmd = np.asarray(v_cmd, dtype=float).copy()
+    s = float(np.hypot(*v_cmd[:2]))
+    if s > v_max:
+        v_cmd[:2] *= max(v_max, 0.0) / s
     return v_cmd
 
 
 def safe_velocity(v_goal, chk: FenceCheck):
-    """
-    Velocity command after the fence check.
-    STOP and NO-FIX hover: once the confidence disc touches a fence, the field
-    normal at the *estimated* position can point the wrong way, so keeping a
-    "sideways" component is not safe.
-    """
-    if chk.state in ("STOP", "NO-FIX"):
+    """Stateless part of the command logic (RETRACE needs ReturnGuard)."""
+    if chk.state in ("HOLD", "RETRACE"):
         return np.zeros(3)
-    return limit_velocity(v_goal, chk.n_hat, chk.v_cap)
+    if chk.verified:
+        return limit_velocity(v_goal, chk.n_hat, chk.v_allow)
+    return cap_speed(v_goal, chk.v_allow)
+
+
+class ReturnGuard:
+    """
+    The fence logic with memory. It keeps the last verified fix and a dead-
+    reckoned position (last verified fix + integral of the Doppler velocity).
+    When the fix is not verified and the fallback buffer says "move away",
+    n_hat cannot be trusted, so the drone retraces its own path back to the
+    last verified fix: it got there safely, so going back is safe.
+    """
+
+    def __init__(self, field: DistanceField):
+        self.field = field
+        self.p_last_ok = None      # last verified p_hat (ENU, m)
+        self.p_dr = None           # dead-reckoned position since then
+        self.arrived = False       # retrace done: hold until a verified fix
+
+    def step(self, sol: NavSolution, v_goal, dt):
+        chk = check(self.field, sol)
+        if sol.ok and sol.integrity:
+            self.p_last_ok = sol.p_enu[:2].copy()
+            self.p_dr = self.p_last_ok.copy()
+            self.arrived = False
+        elif self.p_dr is not None and np.all(np.isfinite(sol.v_enu[:2])):
+            self.p_dr = self.p_dr + sol.v_enu[:2] * dt
+
+        if chk.state == "RETRACE":
+            if self.p_last_ok is None or self.arrived:
+                chk.state = "HOLD"                     # nothing to go back to / already there
+                return np.zeros(3), chk
+            to_go = self.p_last_ok - self.p_dr
+            dist = float(np.hypot(*to_go))
+            if dist < P.RETRACE_TOL:
+                # Stop steering by dead reckoning once there: a biased velocity
+                # would otherwise make a "hovering" drone wander.
+                self.arrived = True
+                chk.state = "HOLD"
+                return np.zeros(3), chk
+            v = np.zeros(3)
+            v[:2] = to_go / dist * min(P.V_RETURN, dist / P.DT)
+            return v, chk
+        v_cmd = safe_velocity(v_goal, chk)
+        if chk.state in ("CLEAR", "SLOW"):             # SLOW = the logic cut the command
+            cut = np.hypot(*(v_cmd[:2] - np.asarray(v_goal, dtype=float)[:2])) > 1e-6
+            chk.state = "SLOW" if cut else "CLEAR"
+        return v_cmd, chk
 
 
 # --------------------------------------------------------------------------
-# Demo: fly at restricted zone A and let the buffer stop the drone
+# Demo: fly at restricted zone A and let the logic stop and return the drone
 # --------------------------------------------------------------------------
-def closed_loop(label, canyon=None, seconds=70, seed=5, verbose=False):
+def closed_loop(label, canyon=None, canyon_from=0.0, seconds=70, seed=5, verbose=False):
     from sim import Sim
     from spp import SPP
 
     frame = LocalFrame()
     field = DistanceField(example_fences(frame))
     sim = Sim(frame, canyon=canyon, seed=seed)
+    if canyon_from > 0:                              # open sky first, canyon later
+        sim.canyon = None
     solver = SPP(frame)
+    guard = ReturnGuard(field)
     heading = np.radians(30.0)
     v_goal = P.V_MAX * np.array([np.sin(heading), np.cos(heading), 0.0])
     v_cmd = np.zeros(3)                              # hold until the first fix
-    d_true_min, rows = np.inf, []
+    d_true_min, rows, states = np.inf, [], {}
+    t0 = sim.t
     for _ in range(seconds):
+        if canyon_from > 0 and sim.t - t0 >= canyon_from:
+            sim.canyon = canyon
         ep, truth = sim.step(P.DT_GNSS, v_cmd)       # command held for one epoch
         sol = solver.step(ep)
-        chk = check(field, sol)
-        v_cmd = safe_velocity(v_goal, chk)
+        v_cmd, chk = guard.step(sol, v_goal, P.DT_GNSS)
         d_true = field.distance(truth["p_enu"][:2])
         d_true_min = min(d_true_min, d_true)
-        rows.append((truth["t"], d_true, chk, sol, float(np.hypot(*truth["v_enu"][:2]))))
+        states[chk.state] = states.get(chk.state, 0) + 1
+        rows.append((truth["t"], d_true, chk, sol, float(np.hypot(*truth["v_enu"][:2])), truth))
 
     print(label)
     if verbose:
-        print("     t   d_true  d_est  HDOP  sig_h  v_true  v_close  r_buf  v_cap  state")
-        t0 = rows[0][0]
-        for t, dt_, c, s, vt in rows[::5]:
+        print("     t   d_true  d_est  HDOP  sig_h  v_true  v_close  r_buf  v_allow  state")
+        for t, dt_, c, s, vt, _ in rows[::5]:
             print(f"  {t - t0:4.0f}  {dt_:6.1f}  {c.d:5.1f}  {s.hdop:4.2f}  {c.sigma_h:5.1f}"
-                  f"  {vt:6.2f}  {c.v_close:6.2f}  {c.r_buffer:5.1f}  {c.v_cap:5.2f}  {c.state}")
+                  f"  {vt:6.2f}  {c.v_close:6.2f}  {c.r_buffer:5.1f}  {c.v_allow:6.2f}  {c.state}")
     first_slow = next((r[1] for r in rows if r[2].state != "CLEAR"), float("nan"))
+    print(f"  states: " + ", ".join(f"{k} {v}" for k, v in states.items()))
     print(f"  first slow-down {first_slow:.0f} m from the fence; ended {rows[-1][1]:.1f} m away"
           f" (closest {d_true_min:.1f} m, drone radius {P.R_DRONE} m)"
           f" -> {'BREACH' if d_true_min < P.R_DRONE else 'no breach'}")
@@ -289,6 +364,10 @@ if __name__ == "__main__":
         print(f"  {f.kind:8s} {f.name}: {len(f.xy)} vertices,"
               f" signed distance from origin {float(signed_distance([f], 0.0, 0.0)):.1f} m")
     print()
-    closed_loop("open sky", verbose=True)
+    closed_loop("open sky: pilot keeps pushing at the fence", verbose=True)
     closed_loop("street canyon, 15 m buildings (LOS only)", Canyon(height_m=15.0, nlos_fraction=0.0))
-    closed_loop("deep canyon, 30 m buildings + NLOS (fix not verified)", Canyon())
+    closed_loop("deep canyon from the start (never verified)", Canyon())
+    rows = closed_loop("open sky, then deep canyon from t = 17 s (retrace)", Canyon(), canyon_from=17.0)
+    last_ok = max((r for r in rows if r[3].integrity), key=lambda r: r[0])
+    gap = np.hypot(*(rows[-1][5]["p_enu"][:2] - last_ok[5]["p_enu"][:2]))
+    print(f"  retrace ended {gap:.1f} m from where the last verified fix was taken")

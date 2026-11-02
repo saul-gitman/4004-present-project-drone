@@ -7,7 +7,7 @@ comes out of spp.py every GNSS epoch, and boundary.py turns it into a buffer
 radius and a speed cap.
 
     r_buffer = R_DRONE + K_SIGMA * sigma_h + v * DT
-    v_cap    = (d - R_DRONE - K_SIGMA * sigma_h) / DT
+    v_allow  = clip((d - R_DRONE - K_SIGMA * sigma_h) / DT, -V_RETURN, V_MAX)
 """
 
 import math
@@ -74,6 +74,8 @@ USE_VELOCITY_FILTER = True
 SIGMA_ACC_IMU = 0.3       # m/s^2, IMU accel error -> prior velocity growth
 SIGMA_ACC_NO_IMU = 2.0    # m/s^2, manoeuvre allowance when no IMU is logged
 SIGMA_DRIFT_RW = 0.5      # m/s per sqrt(s), receiver clock-drift random walk
+UNVERIFIED_RR_SCALE = 5.0 # Doppler sigma multiplier when the velocity chi2 test
+                          # is not verified (lean on the IMU prior instead)
 
 # --------------------------------------------------------------------------
 # Fence distance field
@@ -81,6 +83,12 @@ SIGMA_DRIFT_RW = 0.5      # m/s per sqrt(s), receiver clock-drift random walk
 FIELD_RES = 2.0           # m, grid spacing
 FIELD_MARGIN = 200.0      # m, grid extends this far beyond the fences
 USE_CLOSING_SPEED = True  # v in the buffer = speed towards the fence, not |v|
+
+# --------------------------------------------------------------------------
+# Return logic (boundary.py)
+# --------------------------------------------------------------------------
+V_RETURN = 2.0            # m/s, top speed when pushing out (RETURN) or retracing
+RETRACE_TOL = 3.0         # m, retrace target reached: hover and wait for a verified fix
 
 
 def summary() -> str:

@@ -9,7 +9,7 @@ Not course content: it only manufactures measurements. It models
   * an optional street canyon that blocks satellites, a fraction of which
     still arrive by reflection (NLOS) with a positive range bias,
   * a drone that tracks a commanded ENU velocity (first-order lag) and an IMU
-    that reports its acceleration with noise.
+    that reports its mean acceleration over each epoch (delta-v / dt) with noise.
 """
 
 from __future__ import annotations
@@ -93,10 +93,11 @@ class Sim:
         """Fly dt seconds towards the commanded velocity, then measure."""
         v_cmd = np.asarray(v_cmd_enu, dtype=float)
         h = 0.01
+        v_start = self.v.copy()
         for _ in range(max(1, int(round(dt / h)))):
-            self.a = (v_cmd - self.v) / self.tau_v
-            self.v = self.v + self.a * h
+            self.v = self.v + (v_cmd - self.v) / self.tau_v * h
             self.p = self.p + self.v * h
+        self.a = (self.v - v_start) / dt     # mean accel over the epoch (IMU delta-v / dt)
         self.t += dt
         self.b += self.d * dt
         return self.measure()
