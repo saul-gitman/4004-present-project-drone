@@ -1,113 +1,88 @@
 """
-params.py - design inputs for the SPP geofence.
+params.py - predefined numbers for the LAE guardrail.
 
-Everything in this file is *chosen*, not measured. The measured state
-(position p, velocity v, horizontal sigma sigma_h) no longer lives here: it
-comes out of spp.py every GNSS epoch, and boundary.py turns it into a buffer
-radius and a speed cap.
+Everything here is chosen, not measured. demo.html hands its own values for a
+few of these to the Python at run time (aircraft speed and size, k, latency,
+sky blockage, sigma_UERE); this file itself never changes. Every module reads
+`P.NAME` when it runs, so an override takes effect immediately.
 
-    r_buffer = R_DRONE + K_SIGMA * sigma_h + v * DT
-    v_allow  = clip((d - R_DRONE - K_SIGMA * sigma_h) / DT, -V_RETURN, V_MAX)
+    python params.py      derived k and latency, and braking vs turning distance
 """
 
 import math
 
 # --------------------------------------------------------------------------
-# Local frame. spp.py reports ENU metres about this point and boundary.py
-# converts fence lat/lon into the same frame, so they must share it.
-# (Default: PolyU campus, Hung Hom. Move it to the start of your UrbanNav run.)
+# Local frame: positions are NED metres (north, east, down) about this point.
+# (PolyU campus, Hung Hom, Hong Kong.)
 # --------------------------------------------------------------------------
 ORIGIN_LAT = 22.3045      # deg
 ORIGIN_LON = 114.1800     # deg
 ORIGIN_H = 10.0           # m, ellipsoidal height
+FLIGHT_ALT = 100.0        # m above the origin; the flight is level
 
 # --------------------------------------------------------------------------
-# Drone
+# Aircraft (eVTOL)
 # --------------------------------------------------------------------------
-R_DRONE = 0.5             # m, physical radius including props
-V_MAX = 10.0              # m/s, horizontal cruise limit
+R_DRONE = 3.0             # m, physical radius including rotors
+V_MAX = 10.0              # m/s, cruise speed the pilot asks for
+A_BRAKE = 2.5             # m/s^2, braking deceleration (also its max acceleration)
+R_TURN = 50.0             # m, turning radius (it can turn tighter when slow)
+V_RETURN = 2.0            # m/s, back-off speed when it is inside a margin
 
 # --------------------------------------------------------------------------
-# Timing: how long the drone keeps flying at v before a fence decision
-# takes effect. This is the Delta-t in r_buffer.
+# Latency: how long the aircraft keeps flying at v before a decision acts.
 # --------------------------------------------------------------------------
-GNSS_RATE_HZ = 1.0                 # UrbanNav receivers log at 1 Hz
-DT_GNSS = 1.0 / GNSS_RATE_HZ       # worst-case age of the fix
-DT_COMPUTE = 0.1                   # SPP + field lookup
-DT_REACT = 0.5                     # controller and motors respond to a new cap
-DT = DT_GNSS + DT_COMPUTE + DT_REACT
+GNSS_RATE_HZ = 1.0        # one GNSS epoch = one decision per second
+DT_COMPUTE = 0.1          # s, positioning + decision
+DT_REACT = 0.5            # s, controller and motors respond
+DT = 1.0 / GNSS_RATE_HZ + DT_COMPUTE + DT_REACT     # 1.6 s
 
 # --------------------------------------------------------------------------
-# Risk -> k.  sigma_h = HDOP * sigma_UERE is the 2-D rms error (drms).
-# For a circular 2-D Gaussian, P(|error| > k * drms) = exp(-k^2), so the
-# multiplier follows from the risk you accept. 1e-4 gives k = 3.03.
-# Elongated canyon ellipses have heavier tails; see README "Limits".
+# Risk -> k. For a circular 2-D Gaussian, P(|error| > k * sigma_h) = exp(-k^2),
+# so P_EXCEED = 1e-4 gives k = 3.03.
 # --------------------------------------------------------------------------
 P_EXCEED = 1e-4
 K_SIGMA = math.sqrt(-math.log(P_EXCEED))
 
 # --------------------------------------------------------------------------
-# GNSS measurement model (zenith-equivalent sigmas; a satellite at elevation
-# el gets sigma / sin(el), i.e. weight w = sin^2(el)).
+# GNSS receiver
 # --------------------------------------------------------------------------
-SIGMA_UERE = 5.0          # m, pseudorange (consumer receiver, open sky)
-SIGMA_RR = 0.2            # m/s, range rate from Doppler
-ELEV_MASK_DEG = 10.0
-WEIGHTING = "sin2el"      # "sin2el" or "equal"
-APPLY_TROPO = True        # simple elevation-mapped troposphere model
-APPLY_EARTH_ROTATION = True   # Sagnac: rotate satellite by omega_e * tau
+SIGMA_UERE = 5.0          # m, pseudorange error (sigma_h = HDOP * SIGMA_UERE)
+SIGMA_RR = 0.2            # m/s, range-rate error from Doppler
+ELEV_MASK_DEG = 10.0      # deg, satellites below this are not used
 
 # --------------------------------------------------------------------------
-# Integrity (chi-square residual test, RAIM-lite)
+# IMU
 # --------------------------------------------------------------------------
-P_FA = 1e-3               # false-alarm probability per epoch
-MAX_EXCLUSIONS = 2        # satellites the FDE loop may drop per epoch
-MIN_DOF_INTEGRITY = 3     # redundancy (n - 4) still needed after exclusion to
-                          # trust sigma_h. With 1-2 dof, two NLOS satellites can
-                          # hide inside the residuals (see README "Limits").
-SIGMA_H_FALLBACK = 50.0   # m, sigma_h used whenever the fix is not verified
+SIGMA_ACC_IMU = 0.3       # m/s^2, accelerometer noise
+SIGMA_YAW_DEG = 1.0       # deg, heading noise
 
 # --------------------------------------------------------------------------
-# Velocity filter = least squares with an IMU prior (= Kalman update)
+# Obstacle sensor. For now one "magic radar": 360 deg, it reports every
+# obstacle within range. A sensor network would have one mount angle each.
 # --------------------------------------------------------------------------
-USE_VELOCITY_FILTER = True
-SIGMA_ACC_IMU = 0.3       # m/s^2, IMU accel error -> prior velocity growth
-SIGMA_ACC_NO_IMU = 2.0    # m/s^2, manoeuvre allowance when no IMU is logged
-SIGMA_DRIFT_RW = 0.5      # m/s per sqrt(s), receiver clock-drift random walk
-UNVERIFIED_RR_SCALE = 5.0 # Doppler sigma multiplier when the velocity chi2 test
-                          # is not verified (lean on the IMU prior instead)
+SENSOR_RANGE = 150.0      # m
+SENSOR_MOUNT_DEG = 0.0    # deg, sensor x-axis relative to the body's forward axis
+SIGMA_RANGE = 0.5         # m
+SIGMA_BEARING_DEG = 1.0   # deg
 
 # --------------------------------------------------------------------------
-# Fence distance field
+# Environment (used by sim.py only): buildings around the aircraft hide every
+# satellite below this elevation. 15 = open city, 35+ = street canyon.
 # --------------------------------------------------------------------------
-FIELD_RES = 2.0           # m, grid spacing
-FIELD_MARGIN = 200.0      # m, grid extends this far beyond the fences
-USE_CLOSING_SPEED = True  # v in the buffer = speed towards the fence, not |v|
-
-# --------------------------------------------------------------------------
-# Return logic (boundary.py)
-# --------------------------------------------------------------------------
-V_RETURN = 2.0            # m/s, top speed when pushing out (RETURN) or retracing
-RETRACE_TOL = 3.0         # m, retrace target reached: hover and wait for a verified fix
-
-
-def summary() -> str:
-    return (
-        f"k = {K_SIGMA:.2f}  (P_exceed = {P_EXCEED:g})\n"
-        f"dt = {DT:.2f} s  (GNSS {DT_GNSS:.2f} + compute {DT_COMPUTE:.2f}"
-        f" + react {DT_REACT:.2f})\n"
-        f"r_drone = {R_DRONE} m, v_max = {V_MAX} m/s\n"
-        f"sigma_UERE = {SIGMA_UERE} m, sigma_rr = {SIGMA_RR} m/s,"
-        f" mask = {ELEV_MASK_DEG} deg, P_fa = {P_FA:g}"
-    )
+SKY_MASK_DEG = 15.0
 
 
 if __name__ == "__main__":
-    print(summary())
+    print(f"k  = {K_SIGMA:.2f}   (P_exceed = {P_EXCEED:g})")
+    print(f"dt = {DT:.2f} s  (GNSS {1 / GNSS_RATE_HZ:.1f} + compute {DT_COMPUTE} + react {DT_REACT})")
+    print(f"brake and turn need the same distance at v = sqrt(2 a R) = "
+          f"{math.sqrt(2 * A_BRAKE * R_TURN):.1f} m/s")
     print()
-    print(" HDOP   v(m/s)  sigma_h(m)  r_buffer(m)")
-    for hdop in (0.8, 1.5, 3.0, 6.0):
-        for v in (0.0, 5.0, 10.0):
-            sh = hdop * SIGMA_UERE
-            rb = R_DRONE + K_SIGMA * sh + v * DT
-            print(f" {hdop:4.1f}   {v:5.1f}   {sh:9.1f}   {rb:10.1f}")
+    print(" v (m/s)  react (m)  brake (m)  turn (m)  shorter")
+    for v in (5, 10, 15, 20, 25):
+        react = v * DT
+        brake = react + v * v / (2 * A_BRAKE)
+        turn = react + R_TURN
+        print(f"  {v:5.0f}   {react:8.1f}   {brake:8.1f}   {turn:7.1f}   "
+              f"{'brake' if brake <= turn else 'turn'}")

@@ -1,0 +1,23 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "EXAMPLE no-entry zone",
+        "note": "Made-up polygon for the demo, not a real eSUA zone. Replace with the published restricted zones."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+        [114.1814558, 22.3058546],
+        [114.1828145, 22.3057643],
+        [114.1832997, 22.3067576],
+        [114.1822322, 22.3074801],
+        [114.1811646, 22.3066673],
+        [114.1814558, 22.3058546]
+        ]]
+      }
+    }
+  ]
+}

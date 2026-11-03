@@ -1,0 +1,2177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAE Guardrail Demo</title>
+<style>
+/* Map on chart paper, the Python flow as five steps on the right.
+   Zone = magenta, building = slate, GNSS = blue, velocity = teal,
+   radar = violet, braking = amber. */
+:root {
+  --paper: #eef1f3; --panel: #f9fafb; --ink: #13223a; --ink2: #4b5c71; --grid: #cfd8e0;
+  --nav: #1c5fb8; --vel: #0b7a83; --zone: #a3176f; --bldg: #6f7f91; --radar: #6b4fbb;
+  --warn: #b26a00; --ok: #2b7a4b; --stop: #c0292b;
+  --f-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --f-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0c141e; --panel: #122030; --ink: #dce6ef; --ink2: #93a4b6; --grid: #26384a;
+    --nav: #6ea8ff; --vel: #45c6cf; --zone: #ff5cb4; --bldg: #8a9bb0; --radar: #b39dff;
+    --warn: #f0a63a; --ok: #5bc78a; --stop: #ff6b6b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0c141e; --panel: #122030; --ink: #dce6ef; --ink2: #93a4b6; --grid: #26384a;
+  --nav: #6ea8ff; --vel: #45c6cf; --zone: #ff5cb4; --bldg: #8a9bb0; --radar: #b39dff;
+  --warn: #f0a63a; --ok: #5bc78a; --stop: #ff6b6b; color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 14px/1.45 var(--f-ui); }
+.app { max-width: 1500px; margin: 0 auto; padding: 0 16px 24px; display: grid;
+       grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); gap: 0 20px; }
+header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+         padding: 12px 0; border-bottom: 1px solid var(--grid); }
+h1 { margin: 0; font-size: 17px; letter-spacing: .04em; text-transform: uppercase; }
+h1 span { color: var(--zone); font-weight: 600; text-transform: none; letter-spacing: 0; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-left: auto; }
+button { font: 600 13px/1 var(--f-ui); height: 32px; padding: 0 12px; border-radius: 3px; cursor: pointer;
+         color: var(--ink); background: var(--panel); border: 1px solid var(--grid); }
+button.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.seg { display: inline-flex; border: 1px solid var(--grid); border-radius: 3px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button + button { border-left: 1px solid var(--grid); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.lbl { font-size: 12px; color: var(--ink2); }
+button:focus-visible, input:focus-visible, summary:focus-visible, canvas:focus-visible { outline: 2px solid var(--nav); outline-offset: 2px; }
+
+.mapcol { padding: 14px 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.arena { position: relative; height: max(440px, calc(100vh - 170px)); background: var(--panel); }
+.arena canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+.overlay { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2;
+           background: var(--panel); border: 1px solid var(--grid); padding: 16px 20px; max-width: min(420px, 90%); }
+.overlay h2 { margin: 0 0 6px; font-size: 18px; }
+.overlay p { margin: 0; color: var(--ink2); }
+.chip { position: absolute; left: 12px; top: 12px; z-index: 1; }
+.help { margin: 0; font-size: 13px; color: var(--ink2); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink2); }
+.legend i { display: inline-block; width: 14px; height: 3px; margin-right: 5px; vertical-align: middle; }
+
+aside { padding: 14px 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card { background: var(--panel); padding: 12px 14px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink2); }
+.card h3 b { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: 6px; border-radius: 50%;
+             background: var(--ink); color: var(--paper); font-size: 11px; letter-spacing: 0; }
+.card h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; font-size: 13px; }
+.kv dt { color: var(--ink2); }
+.kv dd { margin: 0; font: 500 13px/1.45 var(--f-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.gnss { display: grid; grid-template-columns: minmax(0, 1fr) 116px; gap: 10px; align-items: start; }
+#sky { width: 116px; height: 116px; display: block; }
+.skynote { margin: 2px 0 0; font-size: 11px; color: var(--ink2); text-align: center; }
+table { width: 100%; border-collapse: collapse; font: 500 12px/1.4 var(--f-mono); font-variant-numeric: tabular-nums; }
+th { font: 600 11px/1.3 var(--f-ui); color: var(--ink2); text-align: right; padding: 2px 4px; }
+th:first-child, td:first-child { text-align: left; }
+td { text-align: right; padding: 3px 4px; border-top: 1px solid var(--grid); }
+tr.worst td { font-weight: 700; }
+.pill { display: inline-block; font: 700 12px/1 var(--f-mono); letter-spacing: .06em; padding: 6px 9px;
+        border: 1.5px solid currentColor; border-radius: 3px; background: var(--panel); }
+.pill[data-s="CLEAR"] { color: var(--ok); }
+.pill[data-s="BRAKE"] { color: var(--warn); }
+.pill[data-s="TURN"] { color: var(--vel); }
+.pill[data-s="RETURN"], .pill[data-s="HOLD"] { color: var(--stop); }
+.why { margin: 8px 0 0; font-size: 13px; }
+.note { margin: 6px 0 0; font-size: 12px; color: var(--ink2); }
+details.card > summary { cursor: pointer; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink2); font-weight: 700; }
+.params { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 6px 10px; align-items: center; margin-top: 10px; }
+.params .grp { grid-column: 1 / -1; font-size: 11px; font-weight: 700; color: var(--ink2); padding-top: 6px; border-top: 1px solid var(--grid); }
+.params label { font-size: 13px; }
+.params label small { display: block; color: var(--ink2); font: 400 11px/1.3 var(--f-mono); }
+.params input { width: 84px; height: 30px; padding: 0 6px; font: 500 13px/1 var(--f-mono); color: var(--ink);
+                background: var(--paper); border: 1px solid var(--grid); border-radius: 3px; }
+.params input.changed { border-color: var(--zone); }
+.prow { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+@media (min-width: 981px) { .mapcol { position: sticky; top: 0; align-self: start; } }
+@media (max-width: 980px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .arena { height: 60vh; min-height: 340px; }
+  .tools { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>LAE guardrail <span>GNSS + IMU for zones, radar for buildings</span></h1>
+    <div class="tools">
+      <button id="b-run" class="primary">Pause</button>
+      <button id="b-restart">Restart</button>
+      <span class="lbl">Speed</span>
+      <div class="seg" id="seg-speed">
+        <button data-v="1" aria-pressed="false">×1</button><button data-v="2" aria-pressed="true">×2</button><button data-v="4" aria-pressed="false">×4</button>
+      </div>
+      <span class="lbl">Fly at</span>
+      <div class="seg" id="seg-target">
+        <button data-t="zone" aria-pressed="true">Zone</button><button data-t="building" aria-pressed="false">Building</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="mapcol">
+    <div class="arena">
+      <canvas id="map" aria-label="Map: no-entry zone, building, aircraft, GNSS estimate and radar"></canvas>
+      <div class="chip"><span class="pill" id="chip" data-s="HOLD">LOADING</span></div>
+      <div class="overlay" id="ov">
+        <h2 id="ov-h">Loading Python…</h2>
+        <p id="ov-p">This page runs the repo's Python files (sim, location, boundary, main) in the browser with Pyodide. The first load downloads about 10 MB and needs internet.</p>
+      </div>
+    </div>
+    <p class="help">Click the map to move the pilot's target. The pilot flies straight at it; the guardrail changes the command only when it must.</p>
+    <div class="legend">
+      <span><i style="background:var(--zone)"></i>zone + margin r + k·σ<sub>h</sub></span>
+      <span><i style="background:var(--bldg)"></i>building + margin r + k·σ<sub>range</sub></span>
+      <span><i style="background:var(--nav)"></i>GNSS fix, k·σ<sub>h</sub> circle</span>
+      <span><i style="background:var(--radar)"></i>radar returns</span>
+      <span><i style="background:var(--ink2)"></i>reaction v·Δt</span>
+      <span><i style="background:var(--warn)"></i>braking v²/2a</span>
+      <span><i style="background:var(--vel)"></i>velocity, turn arcs R</span>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h3><b>1</b>GNSS → position <small>location.gnss_fix</small></h3>
+      <div class="gnss">
+        <dl class="kv" id="o-gnss"></dl>
+        <div><canvas id="sky" aria-label="Sky plot of satellites"></canvas>
+        <p class="skynote">● used ○ not used<br>grey: blocked sky</p></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3><b>2</b>Doppler + IMU → velocity <small>Navigator.update</small></h3>
+      <dl class="kv" id="o-vel"></dl>
+    </div>
+    <div class="card">
+      <h3><b>3</b>Radar → obstacle in NED <small>location.radar_to_ned</small></h3>
+      <dl class="kv" id="o-radar"></dl>
+    </div>
+    <div class="card">
+      <h3><b>4</b>Boundary → threats <small>boundary.assess</small></h3>
+      <table>
+        <thead><tr><th>threat</th><th>d</th><th>margin</th><th>gap</th><th>v<sub>c</sub></th><th>v<sub>allow</sub></th><th>brake</th><th>turn</th></tr></thead>
+        <tbody id="o-threats"></tbody>
+      </table>
+      <p class="note">metres and m/s · brake = v<sub>c</sub>Δt + v<sub>c</sub>²/2a · turn = v<sub>c</sub>Δt + R(1 − sin a)</p>
+    </div>
+    <div class="card">
+      <h3><b>5</b>Decision → command <small>boundary.decide</small></h3>
+      <span class="pill" id="o-state" data-s="HOLD">HOLD</span>
+      <p class="why" id="o-why"></p>
+      <dl class="kv" id="o-cmd" style="margin-top:6px"></dl>
+    </div>
+
+    <details class="card" id="params-card">
+      <summary>Parameters</summary>
+      <p class="note">The page keeps its own values and hands them to params.py at run time; the file is not changed. Everything else is predefined in params.py.</p>
+      <div class="params" id="params"></div>
+      <div class="prow">
+        <button id="b-apply">Apply now</button>
+        <button id="b-apply-restart">Apply and restart</button>
+        <button id="b-defaults">Page defaults</button>
+      </div>
+      <div class="params" style="grid-template-columns:minmax(0,1fr) auto" id="predef"></div>
+    </details>
+  </aside>
+</div>
+
+<!-- The repo's Python, copied in by make_demo.py so the page also works from disk. -->
+<script type="text/x-python" data-file="params.py">
+"""
+params.py - predefined numbers for the LAE guardrail.
+
+Everything here is chosen, not measured. demo.html hands its own values for a
+few of these to the Python at run time (aircraft speed and size, k, latency,
+sky blockage, sigma_UERE); this file itself never changes. Every module reads
+`P.NAME` when it runs, so an override takes effect immediately.
+
+    python params.py      derived k and latency, and braking vs turning distance
+"""
+
+import math
+
+# --------------------------------------------------------------------------
+# Local frame: positions are NED metres (north, east, down) about this point.
+# (PolyU campus, Hung Hom, Hong Kong.)
+# --------------------------------------------------------------------------
+ORIGIN_LAT = 22.3045      # deg
+ORIGIN_LON = 114.1800     # deg
+ORIGIN_H = 10.0           # m, ellipsoidal height
+FLIGHT_ALT = 100.0        # m above the origin; the flight is level
+
+# --------------------------------------------------------------------------
+# Aircraft (eVTOL)
+# --------------------------------------------------------------------------
+R_DRONE = 3.0             # m, physical radius including rotors
+V_MAX = 10.0              # m/s, cruise speed the pilot asks for
+A_BRAKE = 2.5             # m/s^2, braking deceleration (also its max acceleration)
+R_TURN = 50.0             # m, turning radius (it can turn tighter when slow)
+V_RETURN = 2.0            # m/s, back-off speed when it is inside a margin
+
+# --------------------------------------------------------------------------
+# Latency: how long the aircraft keeps flying at v before a decision acts.
+# --------------------------------------------------------------------------
+GNSS_RATE_HZ = 1.0        # one GNSS epoch = one decision per second
+DT_COMPUTE = 0.1          # s, positioning + decision
+DT_REACT = 0.5            # s, controller and motors respond
+DT = 1.0 / GNSS_RATE_HZ + DT_COMPUTE + DT_REACT     # 1.6 s
+
+# --------------------------------------------------------------------------
+# Risk -> k. For a circular 2-D Gaussian, P(|error| > k * sigma_h) = exp(-k^2),
+# so P_EXCEED = 1e-4 gives k = 3.03.
+# --------------------------------------------------------------------------
+P_EXCEED = 1e-4
+K_SIGMA = math.sqrt(-math.log(P_EXCEED))
+
+# --------------------------------------------------------------------------
+# GNSS receiver
+# --------------------------------------------------------------------------
+SIGMA_UERE = 5.0          # m, pseudorange error (sigma_h = HDOP * SIGMA_UERE)
+SIGMA_RR = 0.2            # m/s, range-rate error from Doppler
+ELEV_MASK_DEG = 10.0      # deg, satellites below this are not used
+
+# --------------------------------------------------------------------------
+# IMU
+# --------------------------------------------------------------------------
+SIGMA_ACC_IMU = 0.3       # m/s^2, accelerometer noise
+SIGMA_YAW_DEG = 1.0       # deg, heading noise
+
+# --------------------------------------------------------------------------
+# Obstacle sensor. For now one "magic radar": 360 deg, it reports every
+# obstacle within range. A sensor network would have one mount angle each.
+# --------------------------------------------------------------------------
+SENSOR_RANGE = 150.0      # m
+SENSOR_MOUNT_DEG = 0.0    # deg, sensor x-axis relative to the body's forward axis
+SIGMA_RANGE = 0.5         # m
+SIGMA_BEARING_DEG = 1.0   # deg
+
+# --------------------------------------------------------------------------
+# Environment (used by sim.py only): buildings around the aircraft hide every
+# satellite below this elevation. 15 = open city, 35+ = street canyon.
+# --------------------------------------------------------------------------
+SKY_MASK_DEG = 15.0
+
+
+if __name__ == "__main__":
+    print(f"k  = {K_SIGMA:.2f}   (P_exceed = {P_EXCEED:g})")
+    print(f"dt = {DT:.2f} s  (GNSS {1 / GNSS_RATE_HZ:.1f} + compute {DT_COMPUTE} + react {DT_REACT})")
+    print(f"brake and turn need the same distance at v = sqrt(2 a R) = "
+          f"{math.sqrt(2 * A_BRAKE * R_TURN):.1f} m/s")
+    print()
+    print(" v (m/s)  react (m)  brake (m)  turn (m)  shorter")
+    for v in (5, 10, 15, 20, 25):
+        react = v * DT
+        brake = react + v * v / (2 * A_BRAKE)
+        turn = react + R_TURN
+        print(f"  {v:5.0f}   {react:8.1f}   {brake:8.1f}   {turn:7.1f}   "
+              f"{'brake' if brake <= turn else 'turn'}")
+</script>
+<script type="text/x-python" data-file="gnss_lib_py_subset.py">
+"""
+gnss_lib_py_subset.py - the parts of gnss_lib_py that this project uses.
+
+Source: https://github.com/Stanford-NavLab/gnss_lib_py (Stanford NAV Lab),
+commit 3a5c43c (14 Sep 2026), MIT licence (copied below).
+
+Each function below is copied from the file named in its banner. Function
+bodies are unchanged; the only edits are the import lines (replaced by the
+small `consts` namespace here) and the first lines of the Klobuchar function,
+marked "# CHANGED:", so it takes satellite positions directly instead of the
+library's NavData objects.
+
+    algorithms/snapshot.py    wls                      pseudorange least squares (SPP)
+    utils/coordinates.py      geodetic_to_ecef         LLH  -> ECEF
+                              ecef_to_geodetic         ECEF -> LLH
+                              LocalCoord               ECEF <-> NED about an origin
+                              ecef_to_el_az            elevation / azimuth of satellites
+    utils/gnss_models.py      _calculate_iono_delay    Klobuchar ionosphere model
+    utils/constants.py        the six constants in `consts`
+
+Why a copy and not `pip install gnss-lib-py`: the full package also installs
+pandas, scipy, matplotlib, plotly, georinex and more, and demo.html runs these
+files in the browser, where only numpy is available.
+
+MIT License
+
+Copyright (c) 2021 Stanford-NavLab
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The coordinate functions are themselves "based on code from
+https://github.com/commaai/laika", MIT License, Copyright (c) 2018 comma.ai,
+under the same permission notice as above.
+"""
+
+import warnings
+from types import SimpleNamespace
+
+import numpy as np
+
+# ---- from utils/constants.py (values unchanged) --------------------------
+consts = SimpleNamespace(
+    A=6378137.,                  # WGS-84 semi-major axis [m]
+    B=6356752.3145,              # WGS-84 semi-minor axis [m]
+    E1SQ=6.69437999014 * 0.001,  # first eccentricity squared
+    E2SQ=6.73949674228 * 0.001,  # second eccentricity squared
+    OMEGA_E_DOT=7.2921151467e-5, # Earth rotation rate [rad/s]
+    C=299792458.,                # speed of light [m/s]
+)
+
+# ==========================================================================
+# utils/coordinates.py
+# ==========================================================================
+EPSILON = 1e-7
+
+def geodetic_to_ecef(geodetic, radians=False):
+    """LLA to ECEF conversion.
+
+    Parameters
+    ----------
+    geodetic : np.ndarray
+        Float with WGS-84 LLA coordinates.
+    radians : bool
+        Flag of whether input [rad].
+
+    Returns
+    -------
+    ecef : np.ndarray
+        ECEF coordinates corresponding to input LLA.
+
+    Notes
+    -----
+    Based on code from https://github.com/commaai/laika.
+
+    """
+
+    ratio = 1.0 if radians else (np.pi / 180.0)
+    geodetic = np.array(geodetic)
+    input_shape = geodetic.shape
+    geodetic = np.atleast_2d(geodetic)
+    if input_shape[0]==3:
+        lat = ratio*geodetic[0,:]
+        lon = ratio*geodetic[1,:]
+        alt = geodetic[2,:]
+    elif input_shape[1]==3:
+        lat = ratio*geodetic[:,0]
+        lon = ratio*geodetic[:,1]
+        alt = geodetic[:,2]
+    else:  # pragma: no cover
+        raise ValueError('geodetic is incorrect shape ', geodetic.shape,
+                        ' should be (N,3) or (3,N)')
+    xi = np.sqrt(1 - consts.E1SQ * np.sin(lat)**2)
+    x = (consts.A / xi + alt) * np.cos(lat) * np.cos(lon)
+    y = (consts.A / xi + alt) * np.cos(lat) * np.sin(lon)
+    z = (consts.A / xi * (1 - consts.E1SQ) + alt) * np.sin(lat)
+    ecef = np.array([x, y, z]).T
+    if input_shape[0]==3:
+        ecef = ecef.T
+    return ecef
+
+
+def ecef_to_geodetic(ecef, radians=False):
+    """ECEF to LLA conversion using Ferrari's method.
+
+    Parameters
+    ----------
+    ecef : np.ndarray
+        array where ECEF x, ECEF y, and ECEF z are either independent
+        rows or independent columns, values should be floats
+    radians : bool
+        If False (default), output of lat/lon is returned in degrees.
+        If True, output of lat/lon is returned in radians.
+
+    Returns
+    -------
+    geodetic : np.ndarray
+        Float with WGS-84 LLA coordinates corresponding to input ECEF.
+        Order is returned as (lat, lon, h) and is returned in the same
+        shape as the input. Height is in meters above the the WGS-84
+        ellipsoid.
+
+    Notes
+    -----
+    Based on code from https://github.com/commaai/laika.
+
+    """
+
+    ecef = np.atleast_2d(ecef)
+    ecef = ecef.astype(np.float64)
+    input_shape = ecef.shape
+    if input_shape[0]==3:
+        x_ecef, y_ecef, z_ecef = ecef[0, :], ecef[1, :], ecef[2, :]
+    elif input_shape[1]==3:
+        x_ecef, y_ecef, z_ecef = ecef[:, 0], ecef[:, 1], ecef[:, 2]
+    else:  # pragma: no cover
+        raise ValueError('Input ECEF vector has incorrect shape ', ecef.shape,
+                        ' should be (N,3) or (3,N)')
+    ratio = 1.0 if radians else (180.0 / np.pi)
+
+    # Convert from ECEF to geodetic using Ferrari's methods
+    # https://en.wikipedia.org/wiki/Geographic_coordinate_conversion#Ferrari.27s_solution
+    r = np.sqrt(x_ecef * x_ecef + y_ecef * y_ecef)
+    E1SQ = consts.A * consts.A - consts.B * consts.B
+    F = 54 * consts.B * consts.B * z_ecef * z_ecef
+    G = r * r + (1 - consts.E1SQ) * z_ecef * z_ecef - consts.E1SQ * E1SQ
+    C = (consts.E1SQ * consts.E1SQ * F * r * r) / (pow(G, 3))
+    S = np.cbrt(1 + C + np.sqrt(C * C + 2 * C + EPSILON))
+    P = F / (3 * pow((S + 1 / S + 1), 2) * G * G)
+    Q = np.sqrt(1 + 2 * consts.E1SQ * consts.E1SQ * P)
+    r_0 =  -(P * consts.E1SQ * r) / (1 + Q) + np.sqrt(0.5 * consts.A * consts.A*(1 + 1.0 / Q) - \
+          P * (1 - consts.E1SQ) * z_ecef * z_ecef / (Q * (1 + Q)) - 0.5 * P * r * r)
+    U = np.sqrt(pow((r - consts.E1SQ * r_0), 2) + z_ecef * z_ecef)
+    V = np.sqrt(pow((r - consts.E1SQ * r_0), 2) + (1 - consts.E1SQ) * z_ecef * z_ecef)
+    Z_0 = consts.B * consts.B * z_ecef / (consts.A * V)
+    h = U * (1 - consts.B * consts.B / ((consts.A * V)))
+    lat = ratio*np.arctan((z_ecef + consts.E2SQ * Z_0) / (r))
+    lon = ratio*np.arctan2(y_ecef, x_ecef)
+    # stack the new columns and return to the original shape
+    geodetic = np.column_stack((lat, lon, h))
+    if input_shape[0]==3:
+        geodetic = np.vstack((lat, lon, h))
+    return geodetic
+
+class LocalCoord(object):
+    """Class for conversions to NED (North-East-Down).
+
+    Attributes
+    ----------
+    init_ecef : np.ndarray
+        ECEF of origin of NED.
+    ned_to_ecef_matrix : np.ndarray
+        Rotation matrix to convert from NED to ECEF.
+    ecef_to_ned_matrix : np.ndarray
+        Rotation matrix to convert from ECEF to NED.
+
+    Notes
+    -----
+    Based on code from https://github.com/commaai/laika.
+
+    """
+
+    def __init__(self, init_geodetic, init_ecef):
+        self.init_ecef = init_ecef
+        if init_geodetic.shape[0]==3:
+            lat = (np.pi/180.)*init_geodetic[0, 0]
+            lon = (np.pi/180.)*init_geodetic[1, 0]
+        elif init_geodetic.shape[1]==3:
+            lat = (np.pi/180.)*init_geodetic[0, 0]
+            lon = (np.pi/180.)*init_geodetic[0, 1]
+        else:  # pragma: no cover
+            raise ValueError('init_geodetic has incorrect size', len(init_geodetic),
+                            ' must be of size 3')
+        self.ned_to_ecef_matrix = np.array([[-np.sin(lat)*np.cos(lon), -np.sin(lon), -np.cos(lat)*np.cos(lon)],
+                                            [-np.sin(lat)*np.sin(lon), np.cos(lon), -np.cos(lat)*np.sin(lon)],
+                                            [np.cos(lat), 0, -np.sin(lat)]])
+        self.ecef_to_ned_matrix = self.ned_to_ecef_matrix.T
+
+    @classmethod
+    def from_geodetic(cls, init_geodetic):
+        """Instantiate class using NED origin in geodetic coordinates.
+
+        Parameters
+        ----------
+        init_geodetic : np.ndarray
+            Float with WGS-84 LLA coordinates of the NED origin
+
+        Returns
+        -------
+        local_coord : LocalCoord
+            Instance of LocalCoord object with corresponding NED origin.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        init_ecef = geodetic_to_ecef(init_geodetic)
+        local_coord = LocalCoord(init_geodetic, init_ecef)
+        return local_coord
+
+    @classmethod
+    def from_ecef(cls, init_ecef):
+        """Instantiate class using the NED origin in ECEF coordinates.
+
+        Parameters
+        ----------
+        init_ecef : np.ndarray
+            Float with ECEF coordinates of the NED origin.
+
+        Returns
+        -------
+        local_coord : LocalCoord
+            Instance of LocalCoord object with corresponding NED origin.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        init_geodetic = ecef_to_geodetic(init_ecef)
+        local_coord = LocalCoord(init_geodetic, init_ecef)
+        return local_coord
+
+    def ecef_to_ned(self, ecef):
+        """Convert ECEF position vectors to NED position vectors.
+
+        Parameters
+        ----------
+        ecef : np.ndarray
+            Float with ECEF position vectors.
+
+        Returns
+        -------
+        ned : np.ndarray
+            Converted NED position vectors.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        ecef = np.array(ecef)
+        # Convert to column vectors for calculation before returning in the same shape as the input
+        input_shape = ecef.shape
+        if input_shape[0] == 3:
+            ned =  np.matmul(self.ecef_to_ned_matrix, (ecef - np.reshape(self.init_ecef, [3, -1])))
+        elif input_shape[1]==3:
+            ned = np.matmul(self.ecef_to_ned_matrix, (ecef.T - np.reshape(self.init_ecef, [3, -1])))
+            ned = np.transpose(ned)
+        return ned
+
+    def ecef_to_nedv(self, ecef):
+        """Convert ECEF free vectors to NED free vectors.
+
+        Parameters
+        ----------
+        ecef : np.ndarray
+            Float with free vectors in the ECEF frame of reference.
+
+        Returns
+        -------
+        ned : np.ndarray
+            Converted free vectors in the NED frame of reference.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        ecef = np.array(ecef)
+        # Convert to column vectors for calculation before returning in the same shape as the input
+        input_shape = ecef.shape
+        if input_shape[0] == 3:
+            ned =  np.matmul(self.ecef_to_ned_matrix, ecef)
+        elif input_shape[1]==3:
+            ned = np.matmul(self.ecef_to_ned_matrix, ecef.T)
+            ned = ned.T
+        return ned
+
+    def ned_to_ecef(self, ned):
+        """Convert NED position vectors to ECEF position vectors.
+
+        Parameters
+        ----------
+        ned : np.ndarray
+            Float with position vectors in the NED frame of reference.
+
+        Returns
+        -------
+        ecef : np.ndarray
+            Converted position vectors in the ECEF frame of reference.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        ned = np.array(ned)
+        # Convert to column vectors for calculation before returning in the same shape as the input
+        input_shape = ned.shape
+        if input_shape[0] == 3:
+            ecef =  np.matmul(self.ned_to_ecef_matrix, ned) + np.reshape(self.init_ecef, [3, -1])
+        elif input_shape[1]==3:
+            ecef = np.matmul(self.ned_to_ecef_matrix, ned.T) + np.reshape(self.init_ecef, [3, -1])
+            ecef = ecef.T
+        return ecef
+
+    def ned_to_ecefv(self, ned):
+        """Convert NED free vectors to ECEF free vectors.
+
+        Parameters
+        ----------
+        ned : np.ndarray
+            Float with free vectors in the NED frame of reference.
+
+        Returns
+        -------
+        ecef : np.ndarray
+            Converted free vectors in the ECEF frame of reference.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        ned = np.array(ned)
+        # Convert to column vectors for calculation before returning in the same shape as the input
+        input_shape = ned.shape
+        if input_shape[0] == 3:
+            ecef =  np.matmul(self.ned_to_ecef_matrix, ned)
+        elif input_shape[1]==3:
+            ecef = np.matmul(self.ned_to_ecef_matrix, ned.T)
+            ecef = ecef.T
+        return ecef
+
+    def geodetic_to_ned(self, geodetic):
+        """Convert geodetic position vectors to NED position vectors.
+
+        Parameters
+        ----------
+        geodetic : np.ndarray
+            Float with geodetic position vectors.
+
+        Returns
+        -------
+        ned : np.ndarray
+            Converted NED position vectors.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        ecef = geodetic_to_ecef(geodetic)
+        ned = self.ecef_to_ned(ecef)
+        return ned
+
+    def ned_to_geodetic(self, ned):
+        """Convert geodetic position vectors to NED position vectors.
+
+        Parameters
+        ----------
+        ned : np.ndarray
+            Float with NED position vectors.
+
+        Returns
+        -------
+        geodetic : np.ndarray
+            Converted geodetic position vectors.
+
+        Notes
+        -----
+        Based on code from https://github.com/commaai/laika.
+
+        """
+
+        ecef = self.ned_to_ecef(ned)
+        geodetic = ecef_to_geodetic(ecef)
+        return geodetic
+
+def ecef_to_el_az(rx_pos, sv_pos):
+    """Calculate the elevation and azimuth from receiver to satellites.
+
+    Vectorized to be able to be able to output the elevation and azimuth
+    for multiple satellites at the same time.
+
+    Parameters
+    ----------
+    rx_pos : np.ndarray
+        1x3 vector containing ECEF [X, Y, Z] coordinate of receiver
+    sv_pos : np.ndarray
+        3xN array  containing ECEF [X, Y, Z] coordinates of satellites
+
+    Returns
+    -------
+    el_az : np.ndarray
+        2XN array containing the elevation and azimuth from the
+        receiver to the requested satellites. Elevation and azimuth are
+        given in decimal degrees.
+
+    Notes
+    -----
+    Code based on method by J. Makela.
+    AE 456, Global Navigation Sat Systems, University of Illinois
+    Urbana-Champaign. Fall 2017
+
+    """
+
+    # conform receiver position to correct shape
+    rx_pos = np.atleast_2d(rx_pos)
+    if rx_pos.shape == (1,3):
+        rx_pos = rx_pos.T
+    if rx_pos.shape != (3, 1):
+        raise RuntimeError("Receiver ECEF position must be a " \
+                          + "np.ndarray of shape 3x1.")
+
+    # conform satellite position to correct shape
+    sv_pos = np.atleast_2d(sv_pos)
+    if sv_pos.shape[0] != 3:
+        raise RuntimeError("Satellite ECEF position(s) must be a " \
+                          + "np.ndarray of shape 3xN.")
+
+    # Convert the receiver location to WGS84
+    rx_lla = ecef_to_geodetic(rx_pos)
+
+    # Create variables with the latitude and longitude in radians
+    rx_lat, rx_lon = np.deg2rad(rx_lla[:2,0])
+
+    # Create the 3 x 3 transform matrix from ECEF to VEN
+    ecef_to_ven = np.array([[ np.cos(rx_lat)*np.cos(rx_lon),
+                              np.cos(rx_lat)*np.sin(rx_lon),
+                              np.sin(rx_lat)],
+                            [-np.sin(rx_lon),
+                              np.cos(rx_lon),
+                              0.     ],
+                            [-np.sin(rx_lat)*np.cos(rx_lon),
+                             -np.sin(rx_lat)*np.sin(rx_lon),
+                              np.cos(rx_lat)]])
+
+    # Replicate the rx_pos array to be the same size as the satellite array
+    rx_array = np.tile(rx_pos,(1, sv_pos.shape[1]))
+
+    # Calculate the normalized pseudorange for each satellite
+    pseudorange = (sv_pos - rx_array) / np.linalg.norm(sv_pos - rx_array,
+                                             axis=0, keepdims=True)
+
+    # Perform the transform of the normalized pseudorange from ECEF to VEN
+    p_ven = np.dot(ecef_to_ven, pseudorange)
+    # Calculate elevation and azimuth in degrees
+    el_az = np.zeros([2, sv_pos.shape[1]])
+    el_az[0,:] = np.rad2deg((np.pi/2. - np.arccos(p_ven[0,:])))
+    el_az[1,:] = np.rad2deg(np.arctan2(p_ven[1,:],p_ven[2,:]))
+
+    # wrap from 0 to 360
+    while np.any(el_az[1, :] < 0):
+        el_az[1, :][el_az[1, :] < 0] += 360
+
+    return el_az
+
+
+# ==========================================================================
+# algorithms/snapshot.py
+# ==========================================================================
+def wls(rx_est_m, pos_sv_m, corr_pr_m, weights = None,
+        only_bias = False, tol = 1e-7, max_count = 20, sv_rx_time=False):
+    """Weighted least squares solver for GNSS measurements.
+
+    The option for only_bias allows the user to only calculate the clock
+    bias if the receiver position is already known. Only the bias term
+    in rx_est_m will be updated if only_bias is set to True.
+
+    Parameters
+    ----------
+    rx_est_m : np.ndarray
+        Estimated receiver position in ECEF frame in meters and the
+        estimated receiver clock bias also in meters in an
+        array with shape (4 x 1) and the following order:
+        x_rx_m, y_rx_m, z_rx_m, b_rx_m.
+    pos_sv_m : np.ndarray
+        Satellite ECEF positions as an array of shape [# svs x 3] where
+        the columns contain in order x_sv_m, y_sv_m, and z_sv_m.
+    corr_pr_m : np.ndarray
+        Corrected pseudoranges for all satellites with shape of
+        [# svs x 1]
+    weights : np.array
+        Weights as an array of shape [# svs x 1] where the column
+        is in the same order as pos_sv_m and corr_pr_m
+    only_bias : bool
+        If True, then only the receiver clock bias is estimated.
+        Otherwise, both position and clock bias are estimated.
+    tol : float
+        Tolerance used for the convergence check.
+    max_count : int
+        Number of maximum iterations before process is aborted and
+        solution returned.
+    sv_rx_time : bool
+        Flag to indicate if the satellite positions at the time of
+        transmission should be used as is or if they should be transformed
+        to the ECEF frame of reference at the time of reception. For real
+        measurements, use ``sv_rx_time=False`` to account for the Earth's
+        rotation and convert SV positions from the ECEF frame at the time
+        of signal transmission to the ECEF frame at the time of signal
+        reception. If the SV positions should be used as is, set
+        ``sv_rx_time=True`` to indicate that the given positions are in
+        the ECEF frame of reference for when the signals are received.
+        By default, ``sv_rx_time=False``.
+
+    Returns
+    -------
+    rx_est_m : np.ndarray
+        Estimated receiver position in ECEF frame in meters and the
+        estimated receiver clock bias also in meters in an
+        array with shape (4 x 1) and the following order:
+        x_rx_m, y_rx_m, z_rx_m, b_rx_m.
+
+    Notes
+    -----
+    This function internally updates the used SV position to account for
+    the time taken for the signal to travel to the Earth from the GNSS
+    satellites.
+    Since the SV and receiver positions are calculated in an ECEF frame
+    of reference, which is moving with the Earth's rotation, the reference
+    frame is slightly (about 30 m along longitude) different when the
+    signals are received than when the signals were transmitted. Given
+    the receiver's position is estimated when the signal is received,
+    the SV positions need to be updated to reflect the change in the
+    frame of reference in which their position is calculated.
+
+    This update happens after every Gauss-Newton update step and is
+    adapted from [1]_.
+
+    References
+    ----------
+    .. [1] https://github.com/google/gps-measurement-tools/blob/master/opensource/FlightTimeCorrection.m
+
+    """
+
+    rx_est_m = rx_est_m.copy() # don't change referenced value
+
+    count = 0
+    # Store the SV position at the original receiver time.
+    # This position will be modified by the time taken by the signal to
+    # travel to the receiver.
+    rx_time_pos_sv_m = pos_sv_m.copy()
+    num_svs = pos_sv_m.shape[0]
+    if num_svs < 4 and not only_bias:
+        raise RuntimeError("Need at least four satellites for WLS.")
+    pos_x_delta = np.inf*np.ones((4,1))
+
+    # load weights
+    if weights is None:
+        weight_matrix = np.eye(num_svs)
+    elif isinstance(weights, np.ndarray):
+        if weights.ndim != 0 and weights.size == num_svs:
+            weight_matrix = np.eye(num_svs)*weights
+        else:
+            raise TypeError("WLS weights must be the same length"\
+                            + " as number of satellites.")
+    else:
+        raise TypeError("WLS weights must be None or np.ndarray.")
+
+    while np.linalg.norm(pos_x_delta) > tol:
+        pos_rx_m = np.tile(rx_est_m[0:3,:].T, (num_svs, 1))
+
+        gt_r_m = np.linalg.norm(pos_rx_m - pos_sv_m, axis = 1,
+                                 keepdims = True)
+
+        if only_bias:
+            geometry_matrix = np.ones((num_svs,1))
+        else:
+            geometry_matrix = np.ones((num_svs,4))
+            geometry_matrix[:,:3] = np.divide(pos_rx_m - pos_sv_m,
+                                              gt_r_m.reshape(-1,1))
+
+        # assumes the use of corrected pseudoranges with the satellite
+        # clock bias already removed
+        pr_delta = corr_pr_m - gt_r_m - rx_est_m[3,0]
+        try:
+            pos_x_delta = np.linalg.pinv(geometry_matrix.T @ weight_matrix @ geometry_matrix) \
+                        @ geometry_matrix.T @ weight_matrix @ pr_delta
+        except np.linalg.LinAlgError as exception:
+            print(exception)
+            break
+
+        if only_bias:
+            rx_est_m[3,0] += pos_x_delta[0,0]
+        else:
+            rx_est_m += pos_x_delta
+
+        if not sv_rx_time:
+            # Update the satellite positions based on the time taken for
+            # the signal to reach the Earth and the satellite clock bias.
+            delta_t = (corr_pr_m.reshape(-1) - rx_est_m[3,0])/consts.C
+            dtheta = consts.OMEGA_E_DOT*delta_t
+            pos_sv_m[:, 0] = np.cos(dtheta)*rx_time_pos_sv_m[:,0] + \
+                             np.sin(dtheta)*rx_time_pos_sv_m[:,1]
+            pos_sv_m[:, 1] = -np.sin(dtheta)*rx_time_pos_sv_m[:,0] + \
+                              np.cos(dtheta)*rx_time_pos_sv_m[:,1]
+
+        count += 1
+
+        if count >= max_count:
+            warnings.warn("Newton Raphson did not converge.", RuntimeWarning)
+            break
+
+    return rx_est_m
+
+# ==========================================================================
+# utils/gnss_models.py
+# ==========================================================================
+def _calculate_iono_delay(gps_tow, iono_params, rx_ecef, sv_pos,     # CHANGED: inputs
+                          constellation="gps"):
+    """Calculate the ionospheric delay in pseudorange using the Klobuchar
+    model Section 5.3.2 [1]_.
+
+    Parameters
+    ----------
+    gps_tow : float
+        GPS time of week [s].                                 (CHANGED)
+    iono_params : np.ndarray
+        Ionospheric atmospheric delay parameters for Klobuchar model,
+        passed in 2x4 array, use None if not available.
+    rx_ecef : np.ndarray
+        3x1 receiver position in ECEF frame of reference [m], use None
+        if not available.
+    sv_pos : np.ndarray
+        3xN satellite ECEF positions [m].                   (CHANGED)
+    constellation : string
+        Constellation used for the ionospheric parameters addition.
+
+    Returns
+    -------
+    iono_delay : np.ndarray
+        Estimated delay caused by the ionosphere [m].
+
+    Notes
+    -----
+    Based on code written by J. Makela.
+    AE 456, Global Navigation Sat Systems, University of Illinois
+    Urbana-Champaign. Fall 2017
+
+    References
+    ----------
+    ..  [1] Misra, P. and Enge, P,
+        "Global Positioning System: Signals, Measurements, and Performance."
+        2nd Edition, Ganga-Jamuna Press, 2006.
+
+    """
+    #Reshape receiver position to 3x1
+    rx_ecef = np.reshape(rx_ecef, [3,1])
+
+    # Determine the satellite locations
+    sv_pos = np.asarray(sv_pos, dtype=float)    # CHANGED: positions passed in
+    sv_pos = sv_pos.reshape(3, -1)
+    el_az = ecef_to_el_az(rx_ecef, sv_pos)
+    el_r = np.deg2rad(el_az[0, :])
+    az_r = np.deg2rad(el_az[1, :])
+
+    # Calculate the WGS-84 latitude/longitude of the receiver
+    wgs_llh = ecef_to_geodetic(rx_ecef)
+    lat_r = np.deg2rad(wgs_llh[0, :])
+    lon_r = np.deg2rad(wgs_llh[1, :])
+
+    # Parse the ionospheric parameters
+    alpha = iono_params[constellation][0,:]
+    beta = iono_params[constellation][1,:]
+
+    # Calculate the psi angle
+    psi = 0.1356/(el_r+0.346) - 0.0691
+
+    # Calculate the ionospheric geodetic latitude
+    lat_i = lat_r + psi * np.cos(az_r)
+
+    # Make sure values are in bounds
+    ind = np.argwhere(np.abs(lat_i) > 1.3090)
+    if len(ind) > 0:
+        lat_i[ind] = 1.3090 * np.sign(lat_i[ind])  # pragma: no cover
+    # Calculate the ionospheric geodetic longitude
+    lon_i = lon_r + psi * np.sin(az_r)/np.cos(lat_i)
+
+    # Calculate the solar time corresponding to the gps_tow
+    solar_time = 1.3751e4 * lon_i + gps_tow
+
+    # Make sure values are in bounds
+    solar_time = np.mod(solar_time,86400)
+
+    # Calculate the geomagnetic latitude (semi-circles)
+    lat_m = (lat_i + 2.02e-1 * np.cos(lon_i - 5.08))/np.pi
+    # Calculate the period
+    period = beta[0]+beta[1]*lat_m+beta[2]*lat_m**2+beta[3]*lat_m**3
+
+    # Make sure values are in bounds
+    ind = np.argwhere(period < 72000).flatten()
+    if len(ind) > 0:
+        period[ind] = 72000  # pragma: no cover
+
+    # Calculate the local time angle
+    theta = 2*np.pi*(solar_time - 50400) / period
+
+    # Calculate the amplitude term
+    amp = (alpha[0]+alpha[1]*lat_m+alpha[2]*lat_m**2+alpha[3]*lat_m**3)
+
+    # Make sure values are in bounds
+    ind = np.argwhere(amp < 0).flatten()
+    if len(ind) > 0:
+        amp[ind] = 0  # pragma: no cover
+
+    # Calculate the slant factor
+    slant_fact = 1.0 + 5.16e-1 * (1.6755-el_r)**3
+
+    # Calculate the ionospheric delay
+    iono_delay = slant_fact * 5.0e-9
+    ind = np.argwhere(np.abs(theta) < np.pi/2.).flatten()
+    if len(ind) > 0:
+        iono_delay[ind] = slant_fact[ind]* \
+            (5e-9+amp[ind]*(1-theta[ind]**2/2.+theta[ind]**4/24.))
+
+    # Convert ionospheric delay to equivalent meters
+    iono_delay = consts.C*iono_delay
+    return iono_delay
+</script>
+<script type="text/x-python" data-file="location.py">
+"""
+location.py - where am I, how fast am I going, and where are the obstacles?
+
+Two flows, because the two kinds of threat are measured differently.
+
+FLOW 1  GNSS + IMU   absolute position, compared with the eSUA map (zones)
+    pseudorange - Klobuchar iono   -> gnss_lib_py wls()   -> p (ECEF -> NED), clock bias
+    rows H = [-e_i, 1] at the fix  -> Q = (H^T H)^-1      -> HDOP, sigma_h = HDOP * SIGMA_UERE
+    Doppler range rate, same H     -> least squares       -> v_gnss, clock drift
+    IMU acceleration, body -> NED  -> v_imu = v + a * dt
+    weighted:  v = w * v_gnss + (1 - w) * v_imu,   w = s_imu^2 / (s_imu^2 + s_gnss^2)
+
+FLOW 2  radar        relative position, no GNSS needed (buildings)
+    (range, bearing) in the sensor frame -> body frame (mount angle) -> NED (heading)
+
+Frames: ECEF for satellites; NED metres about params.ORIGIN_* for the map,
+zones and aircraft; body = (forward, right) for the IMU and the radar. The
+flight is level, so everything after the GNSS fix uses (north, east) only.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import numpy as np
+
+import params as P
+from gnss_lib_py_subset import LocalCoord, ecef_to_el_az, wls
+from gnss_lib_py_subset import _calculate_iono_delay as klobuchar
+
+FRAME = LocalCoord.from_geodetic(np.array([[P.ORIGIN_LAT, P.ORIGIN_LON, P.ORIGIN_H]]))
+
+
+def rot(angle):
+    """2-D rotation by `angle` (rad, clockwise seen from above).
+
+    rot(heading):    body (forward, right) -> NED (north, east)
+    rot(mount):      sensor frame -> body frame
+    rot(...).T:      the way back
+    """
+    c, s = math.cos(angle), math.sin(angle)
+    return np.array([[c, -s], [s, c]])
+
+
+# ==========================================================================
+# Flow 1: GNSS position (pseudorange) and velocity (Doppler)
+# ==========================================================================
+def gnss_fix(ep, x0):
+    """
+    Single point positioning for one epoch. x0 = (4,1) [ECEF x, y, z; clock bias]
+    is the starting guess (last fix). Returns None if fewer than 4 satellites
+    are above the elevation mask.
+    """
+    el, _ = ecef_to_el_az(x0[:3], ep["sv_pos"].T)
+    use = el >= P.ELEV_MASK_DEG
+    if use.sum() < 4:
+        return None
+    sv_pos = ep["sv_pos"][use]
+    iono = klobuchar(ep["t"], ep["iono_params"], x0[:3], sv_pos.T)      # m, one per satellite
+    x = wls(x0, sv_pos, (ep["pr"][use] - iono).reshape(-1, 1), sv_rx_time=True)
+
+    # Geometry at the fix: one row [-e_i, 1] per satellite, rotated into NED.
+    los = sv_pos - x[:3, 0]
+    e = los / np.linalg.norm(los, axis=1, keepdims=True)                 # receiver -> satellite
+    H = np.column_stack([-e @ FRAME.ecef_to_ned_matrix.T, np.ones(len(e))])
+    Q = np.linalg.inv(H.T @ H)
+    return {"x": x, "p": FRAME.ecef_to_ned(x[:3].T)[0, :2],
+            "hdop": math.sqrt(Q[0, 0] + Q[1, 1]), "e": e, "use": use, "iono": iono}
+
+
+def doppler_velocity(ep, fix):
+    """
+    Velocity from Doppler, with the same rows H = [-e_i, 1] as the position:
+        rr_i = e_i . (v_sat_i - v) + c*dt_dot
+        z_i  = rr_i - e_i . v_sat_i  =  -e_i . v + c*dt_dot
+    Linear, so one solve: [v; c*dt_dot] = (H^T H)^-1 H^T z.
+    Returns v (north, east) in m/s.
+    """
+    e = fix["e"]
+    z = ep["rr"][fix["use"]] - np.einsum("ij,ij->i", e, ep["sv_vel"][fix["use"]])
+    H = np.column_stack([-e, np.ones(len(e))])
+    sol = np.linalg.solve(H.T @ H, H.T @ z)
+    return FRAME.ecef_to_nedv(sol[:3].reshape(1, 3))[0, :2]
+
+
+@dataclass
+class NavState:
+    t: float
+    fix: bool              # a GNSS position this epoch
+    p: np.ndarray | None   # (2,) north, east (m); None before the first fix
+    v: np.ndarray          # (2,) weighted GNSS + IMU velocity (m/s)
+    a: np.ndarray          # (2,) IMU acceleration in NED (m/s^2)
+    heading: float         # rad, from the IMU
+    sigma_h: float         # m, horizontal position sigma
+    hdop: float
+    n_sats: int            # satellites used
+    w_gnss: float          # weight on the GNSS velocity (0 = IMU only)
+    v_gnss: np.ndarray | None
+    v_imu: np.ndarray | None
+    iono_mean: float       # m, mean Klobuchar correction
+    used: list
+
+
+class Navigator:
+    """Flow 1 with memory: warm start for the fix, last velocity for the IMU."""
+
+    def __init__(self):
+        self.x = np.vstack([FRAME.init_ecef.reshape(3, 1), [[0.0]]])
+        self.p = None
+        self.v = None
+        self.sigma_fix = math.inf
+        self.t_out = 0.0                  # s since the last GNSS fix
+
+    def update(self, ep, imu, dt) -> NavState:
+        a = rot(imu["heading"]) @ imu["acc_body"]                 # body -> NED
+        v_imu = None if self.v is None else self.v + a * dt
+        fix = gnss_fix(ep, self.x)
+
+        if fix is not None:
+            self.x, self.p, self.t_out = fix["x"], fix["p"], 0.0
+            self.sigma_fix = fix["hdop"] * P.SIGMA_UERE
+            sigma_h = self.sigma_fix
+            v_gnss = doppler_velocity(ep, fix)
+            if v_imu is None:
+                w, self.v = 1.0, v_gnss
+            else:
+                s_gnss = fix["hdop"] * P.SIGMA_RR             # same DOP as the position
+                s_imu = P.SIGMA_ACC_IMU * dt
+                w = s_imu ** 2 / (s_imu ** 2 + s_gnss ** 2)
+                self.v = w * v_gnss + (1.0 - w) * v_imu
+        else:                                                 # outage: IMU dead reckoning
+            v_gnss, w = None, 0.0
+            if v_imu is not None:
+                self.v = v_imu
+            if self.p is not None:
+                self.p = self.p + self.v * dt
+                self.t_out += dt
+            sigma_h = self.sigma_fix + 0.5 * P.SIGMA_ACC_IMU * self.t_out ** 2
+
+        return NavState(
+            t=ep["t"], fix=fix is not None, p=self.p,
+            v=np.zeros(2) if self.v is None else self.v, a=a, heading=imu["heading"],
+            sigma_h=sigma_h, hdop=fix["hdop"] if fix else math.nan,
+            n_sats=int(fix["use"].sum()) if fix else 0, w_gnss=w, v_gnss=v_gnss, v_imu=v_imu,
+            iono_mean=float(fix["iono"].mean()) if fix else math.nan,
+            used=[prn for prn, u in zip(ep["prn"], fix["use"]) if u] if fix else [])
+
+
+# ==========================================================================
+# Flow 2: radar returns -> obstacle range and direction in NED
+# ==========================================================================
+@dataclass
+class Obstacle:
+    range: float           # m, as measured
+    u: np.ndarray          # (2,) unit vector aircraft -> obstacle, NED
+
+
+def radar_to_ned(returns, heading):
+    """Each return: sensor frame -> body frame (mount) -> NED (heading)."""
+    R_bs = rot(math.radians(P.SENSOR_MOUNT_DEG))      # sensor -> body
+    R_nb = rot(heading)                               # body -> NED
+    out = []
+    for r in returns:
+        u_sensor = np.array([math.cos(r["bearing"]), math.sin(r["bearing"])])
+        out.append(Obstacle(r["range"], R_nb @ R_bs @ u_sensor))
+    return out
+</script>
+<script type="text/x-python" data-file="boundary.py">
+"""
+boundary.py - one decision for two kinds of threat.
+
+    threat      distance d comes from        margin
+    eSUA zone   GNSS position vs the map     R_DRONE + k * sigma_h      (sigma_h = HDOP * sigma_UERE)
+    obstacle    radar range                  R_DRONE + k * SIGMA_RANGE
+
+The radar measures the distance directly, so GNSS error does not enter the
+obstacle margin. A zone exists only on the map, so the GNSS error does.
+
+For each threat, with the closing speed v_c = -v . n_hat (v from GNSS + IMU,
+n_hat = unit vector pointing away from the threat):
+
+    gap      = d - margin                       room left before the margin
+    d_react  = v_c * DT                         flown before a decision acts
+    d_brake  = d_react + v_c^2 / (2 A_BRAKE)    distance to brake to a stop
+    d_turn   = d_react + R_TURN (1 - sin a)     distance to turn until parallel to the edge
+                                                (a = angle already turned off head-on,
+                                                 sin a = v_side / |v|; head-on: R_TURN)
+    v_allow  = fastest v_c with d_brake <= gap  = A (sqrt(DT^2 + 2 gap / A) - DT)
+
+The most urgent threat (largest v_c - v_allow) sets the state:
+
+    CLEAR    v_c <= v_allow                   pilot command passes
+    BRAKE    v_c >  v_allow and gap <  d_turn  closing part of the command cut to v_allow
+    TURN     v_c >  v_allow and gap >= d_turn  too late to brake, room to turn: fly along the edge
+    RETURN   gap <= 0                         inside the margin: back off at V_RETURN
+
+Below v = sqrt(2 A R) braking is the shorter escape, above it turning is.
+The pilot's command always has its closing speed capped at v_allow, so the
+state also reads BRAKE whenever that cap changes the command.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from dataclasses import dataclass
+
+import numpy as np
+
+import params as P
+from location import FRAME
+
+ZONES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zones.geojson")
+
+
+# --------------------------------------------------------------------------
+# Zones: GeoJSON lat/lon -> NED polygons
+# --------------------------------------------------------------------------
+@dataclass
+class Zone:
+    name: str
+    ne: np.ndarray         # (k, 2) polygon corners, north/east metres
+
+
+def load_zones(path=ZONES_FILE):
+    """No-entry zones from GeoJSON Polygon features ([lon, lat] order, outer ring)."""
+    with open(path) as f:
+        gj = json.load(f)
+    zones = []
+    for i, ft in enumerate(gj["features"]):
+        ring = ft["geometry"]["coordinates"][0]
+        if ring[0] == ring[-1]:
+            ring = ring[:-1]
+        ne = [FRAME.geodetic_to_ned(np.array([[lat, lon, P.ORIGIN_H]]))[0, :2]
+              for lon, lat, *_ in ring]
+        name = (ft.get("properties") or {}).get("name", f"zone {i + 1}")
+        zones.append(Zone(name, np.array(ne)))
+    return zones
+
+
+def closest_point(poly, p):
+    """Nearest point to p on the polygon's edges, and whether p is inside (even-odd rule)."""
+    best, best_d2, inside = None, math.inf, False
+    for a, b in zip(poly, np.roll(poly, -1, axis=0)):
+        ab = b - a
+        t = min(max(float((p - a) @ ab / (ab @ ab)), 0.0), 1.0)
+        q = a + t * ab
+        d2 = float((p - q) @ (p - q))
+        if d2 < best_d2:
+            best, best_d2 = q, d2
+        if (a[1] > p[1]) != (b[1] > p[1]) and \
+                p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]):
+            inside = not inside
+    return best, inside
+
+
+# --------------------------------------------------------------------------
+# Threats
+# --------------------------------------------------------------------------
+@dataclass
+class Threat:
+    kind: str              # "zone" or "obstacle"
+    name: str
+    d: float               # m, distance (negative: inside a zone)
+    n_hat: np.ndarray      # (2,) unit vector pointing away from the threat, NED
+    margin: float          # m
+    v_c: float = 0.0       # filled in by assess()
+    gap: float = 0.0
+    d_react: float = 0.0
+    d_brake: float = 0.0
+    d_turn: float = 0.0
+    v_allow: float = 0.0
+
+
+def zone_threats(zones, nav):
+    """Flow 1 output (GNSS position) against the map."""
+    margin = P.R_DRONE + P.K_SIGMA * nav.sigma_h
+    out = []
+    for z in zones:
+        q, inside = closest_point(z.ne, nav.p)
+        away = nav.p - q
+        d = float(np.hypot(*away))
+        n_hat = away / max(d, 1e-9)
+        if inside:
+            d, n_hat = -d, -n_hat
+        out.append(Threat("zone", z.name, d, n_hat, margin))
+    return out
+
+
+def obstacle_threats(obstacles):
+    """Flow 2 output (radar range and direction): no GNSS position needed."""
+    margin = P.R_DRONE + P.K_SIGMA * P.SIGMA_RANGE
+    return [Threat("obstacle", f"radar return {i + 1}", o.range, -o.u, margin)
+            for i, o in enumerate(obstacles)]
+
+
+def allowed_speed(gap):
+    """Fastest closing speed that can still brake to a stop within `gap` (negative: back off)."""
+    if gap <= 0.0:
+        return -P.V_RETURN
+    return P.A_BRAKE * (math.sqrt(P.DT ** 2 + 2.0 * gap / P.A_BRAKE) - P.DT)
+
+
+def assess(th, v):
+    speed = float(np.hypot(*v))
+    th.v_c = max(0.0, -float(v @ th.n_hat))
+    sin_a = math.sqrt(max(speed ** 2 - th.v_c ** 2, 0.0)) / speed if speed > 0 else 0.0
+    th.gap = th.d - th.margin
+    th.d_react = th.v_c * P.DT
+    th.d_brake = th.d_react + th.v_c ** 2 / (2.0 * P.A_BRAKE)
+    th.d_turn = th.d_react + P.R_TURN * (1.0 - sin_a)
+    th.v_allow = allowed_speed(th.gap)
+    return th
+
+
+# --------------------------------------------------------------------------
+# Decision
+# --------------------------------------------------------------------------
+def cap_closing(v_cmd, n_hat, v_allow):
+    """Closing part of v_cmd (towards the threat) at most v_allow; the sideways part is kept."""
+    closing = -float(v_cmd @ n_hat)
+    return v_cmd + (closing - v_allow) * n_hat if closing > v_allow else v_cmd
+
+
+@dataclass
+class Decision:
+    state: str             # CLEAR / BRAKE / TURN / RETURN / HOLD
+    threats: list
+    worst: Threat | None
+    v_cmd: np.ndarray      # (2,) the command actually sent (north, east)
+
+
+def decide(v_pilot, nav, zones, obstacles) -> Decision:
+    v_pilot = np.asarray(v_pilot, dtype=float)
+    if nav.p is None:                                   # no position yet
+        return Decision("HOLD", [], None, np.zeros(2))
+    threats = [assess(th, nav.v) for th in zone_threats(zones, nav) + obstacle_threats(obstacles)]
+    if not threats:
+        return Decision("CLEAR", [], None, v_pilot)
+
+    worst = max(threats, key=lambda th: th.v_c - th.v_allow)
+    late = worst.v_c > worst.v_allow                    # braking alone no longer fits
+    if worst.gap <= 0.0:
+        state = "RETURN"
+    elif late and worst.gap >= worst.d_turn:
+        state = "TURN"
+    elif late:
+        state = "BRAKE"
+    else:
+        state = "CLEAR"
+
+    v_cmd = v_pilot
+    if state == "TURN":                                 # same speed, along the edge
+        along = np.array([-worst.n_hat[1], worst.n_hat[0]])
+        if along @ nav.v < 0.0:
+            along = -along
+        v_cmd = along * float(np.hypot(*nav.v))
+    for th in threats:
+        v_cmd = cap_closing(v_cmd, th.n_hat, th.v_allow)
+    if state == "CLEAR" and not np.allclose(v_cmd, v_pilot):
+        state = "BRAKE"
+    return Decision(state, threats, worst, v_cmd)
+</script>
+<script type="text/x-python" data-file="sim.py">
+"""
+sim.py - the real world, simulated. It only makes measurements; it is test
+data, not course content.
+
+    satellites  GPS-like constellation: 6 planes x 5, 55 deg, 26 560 km
+    GNSS epoch  pseudorange = range + receiver clock + ionosphere + noise
+                range rate  = e . (v_sat - v) + receiver clock drift + noise
+                (satellite clocks already corrected, Earth rotation ignored)
+    sky         buildings hide every satellite below params.SKY_MASK_DEG
+    IMU         acceleration in the body frame, and heading, with noise
+    radar       range and bearing (sensor frame) to the nearest point of
+                every building within params.SENSOR_RANGE
+    aircraft    follows a velocity command: speed changes at most A_BRAKE,
+                turning radius R_TURN (tighter only when slow)
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+import params as P
+from boundary import closest_point
+from gnss_lib_py_subset import _calculate_iono_delay as klobuchar
+from gnss_lib_py_subset import ecef_to_el_az
+from location import FRAME, rot
+
+# --------------------------------------------------------------------------
+# The world
+# --------------------------------------------------------------------------
+T0 = 4 * 86400 + 11760.0          # GPS time of week: Thursday 11:16 in Hong Kong
+                                  # (8 satellites above 15 deg, 5 above 40, 1 above 45)
+
+# Klobuchar parameters as broadcast in a GPS navigation message (typical values)
+IONO_PARAMS = {"gps": np.array([[1.1176e-08, -7.4506e-09, -5.9605e-08, 1.1921e-07],    # alpha
+                                [1.1674e+05, -2.2938e+05, -1.3107e+05, 1.0486e+06]])}  # beta
+IONO_TRUE_SCALE = 1.5             # the real ionosphere is 1.5 x what the broadcast model says
+
+# One obstacle, taller than the flight altitude. EXAMPLE, north/east metres.
+BUILDINGS = {"EXAMPLE tower": np.array([[150.0, -190.0], [150.0, -130.0],
+                                        [200.0, -130.0], [200.0, -190.0]])}
+
+# --------------------------------------------------------------------------
+# Satellites
+# --------------------------------------------------------------------------
+GM = 3.986004418e14
+A_ORBIT = 26_559_700.0
+INC = math.radians(55.0)
+N_MOTION = math.sqrt(GM / A_ORBIT ** 3)
+OMEGA_E = 7.2921151467e-5
+PRNS = [f"G{k:02d}" for k in range(1, 31)]
+
+
+def _sat_pos(t):
+    pos = []
+    for plane in range(6):
+        raan = math.radians(60.0 * plane + 17.0)
+        for slot in range(5):
+            u = N_MOTION * t + math.radians(72.0 * slot + 15.0 * plane)
+            xo, yo = A_ORBIT * math.cos(u), A_ORBIT * math.sin(u)
+            x1, y1, z1 = xo, yo * math.cos(INC), yo * math.sin(INC)
+            pos.append([x1 * math.cos(raan) - y1 * math.sin(raan),
+                        x1 * math.sin(raan) + y1 * math.cos(raan), z1])
+    eci = np.array(pos)
+    c, s = math.cos(OMEGA_E * t), math.sin(OMEGA_E * t)          # inertial -> ECEF
+    return np.column_stack([c * eci[:, 0] + s * eci[:, 1], -s * eci[:, 0] + c * eci[:, 1], eci[:, 2]])
+
+
+def satellites(t):
+    """ECEF positions and velocities (30, 3) at GPS time t."""
+    return _sat_pos(t), (_sat_pos(t + 0.5) - _sat_pos(t - 0.5))
+
+
+# --------------------------------------------------------------------------
+# Aircraft and its sensors
+# --------------------------------------------------------------------------
+class World:
+    def __init__(self, start=(0.0, 0.0), heading_deg=0.0, seed=1):
+        self.rng = np.random.default_rng(seed)
+        self.p = np.array(start, dtype=float)          # north, east (m)
+        self.speed = 0.0                               # m/s
+        self.heading = math.radians(heading_deg)       # rad, clockwise from north
+        self.t = T0
+        self.clock_bias, self.clock_drift = 15_000.0, 80.0   # receiver clock: m, m/s
+        self.acc = np.zeros(2)                         # mean NED acceleration, last step
+        self.track = [self.p.copy()]                   # positions during the last step
+
+    @property
+    def v(self):
+        return self.speed * np.array([math.cos(self.heading), math.sin(self.heading)])
+
+    def fly(self, v_cmd, dt, h=0.05):
+        """Follow the commanded velocity (north, east) for dt seconds."""
+        v0 = self.v
+        s_cmd = float(np.hypot(*v_cmd))
+        hdg_cmd = math.atan2(v_cmd[1], v_cmd[0]) if s_cmd > 0.1 else self.heading
+        self.track = []
+        for _ in range(max(1, round(dt / h))):
+            err = (hdg_cmd - self.heading + math.pi) % (2.0 * math.pi) - math.pi
+            target = 0.0 if abs(err) > math.pi / 2 else s_cmd          # sharp turn: stop first
+            self.speed += min(max(target - self.speed, -P.A_BRAKE * h), P.A_BRAKE * h)
+            w_max = max(P.A_BRAKE / max(self.speed, 0.1), self.speed / P.R_TURN)
+            self.heading += min(max(err, -w_max * h), w_max * h)       # radius >= min(R, v^2/a)
+            self.p = self.p + self.v * h
+            self.track.append(self.p.copy())
+        self.acc = (self.v - v0) / dt
+        self.t += dt
+        self.clock_bias += self.clock_drift * dt
+
+    def gnss(self):
+        """One GNSS epoch: what the receiver gets from the satellites it can see."""
+        x = FRAME.ned_to_ecef(np.array([[self.p[0], self.p[1], -P.FLIGHT_ALT]]))[0]
+        v = FRAME.ned_to_ecefv(np.array([[self.v[0], self.v[1], 0.0]]))[0]
+        sv_pos, sv_vel = satellites(self.t)
+        el, az = ecef_to_el_az(x.reshape(3, 1), sv_pos.T)
+        seen = el > max(P.SKY_MASK_DEG, 0.0)
+        los = sv_pos - x
+        rng = np.linalg.norm(los, axis=1)
+        e = los / rng[:, None]
+        iono = IONO_TRUE_SCALE * klobuchar(self.t, IONO_PARAMS, x, sv_pos.T)
+        n = len(PRNS)
+        pr = rng + self.clock_bias + iono + self.rng.normal(size=n) * P.SIGMA_UERE
+        rr = (np.einsum("ij,ij->i", e, sv_vel - v) + self.clock_drift
+              + self.rng.normal(size=n) * P.SIGMA_RR)
+        return {"t": self.t, "prn": [p for p, s in zip(PRNS, seen) if s],
+                "sv_pos": sv_pos[seen], "sv_vel": sv_vel[seen], "pr": pr[seen], "rr": rr[seen],
+                "iono_params": IONO_PARAMS,
+                "sky": [(PRNS[k], float(el[k]), float(az[k]), bool(seen[k]))
+                        for k in np.flatnonzero(el > 0)]}
+
+    def imu(self):
+        """Mean acceleration over the last step in the body frame, and heading."""
+        acc_body = rot(self.heading).T @ self.acc + self.rng.normal(size=2) * P.SIGMA_ACC_IMU
+        heading = self.heading + math.radians(P.SIGMA_YAW_DEG) * self.rng.normal()
+        return {"acc_body": acc_body, "heading": heading}
+
+    def radar(self):
+        """Magic radar: range and bearing (sensor frame) to every building in range."""
+        out = []
+        mount = math.radians(P.SENSOR_MOUNT_DEG)
+        for poly in BUILDINGS.values():
+            q, inside = closest_point(poly, self.p)
+            d = 0.0 if inside else float(np.hypot(*(q - self.p)))
+            if d > P.SENSOR_RANGE:
+                continue
+            bearing_ned = math.atan2(q[1] - self.p[1], q[0] - self.p[0])
+            out.append({"range": max(0.0, d + P.SIGMA_RANGE * self.rng.normal()),
+                        "bearing": bearing_ned - self.heading - mount
+                        + math.radians(P.SIGMA_BEARING_DEG) * self.rng.normal()})
+        return out
+
+    def clearance(self, zones):
+        """True distances (m) to the nearest zone edge (negative inside) and building."""
+        dz, db = math.inf, math.inf
+        for z in zones:
+            q, inside = closest_point(z.ne, self.p)
+            dz = min(dz, -float(np.hypot(*(q - self.p))) if inside else float(np.hypot(*(q - self.p))))
+        for poly in BUILDINGS.values():
+            q, inside = closest_point(poly, self.p)
+            db = min(db, 0.0 if inside else float(np.hypot(*(q - self.p))))
+        return dz, db
+</script>
+<script type="text/x-python" data-file="main.py">
+"""
+main.py - the whole flow, one GNSS epoch at a time.
+
+    sim.World --GNSS epoch, IMU--> location.Navigator.update   flow 1: p, v, sigma_h
+              --radar returns----> location.radar_to_ned       flow 2: obstacle range, direction
+    boundary.decide(pilot command, nav, zones, obstacles)   ->  state + safe command
+    sim.World.fly(safe command)
+
+    python main.py      four scripted flights and a summary
+
+demo.html calls web_reset() / web_step() below; its parameter values reach
+params.py through set_params().
+"""
+
+from __future__ import annotations
+
+import json
+import math
+
+import numpy as np
+
+import boundary
+import location
+import params as P
+import sim
+
+START = (0.0, 0.0)
+ZONE_TARGET = (230.0, 230.0)        # inside the EXAMPLE zone
+BUILDING_TARGET = (350.0, -350.0)   # behind the EXAMPLE tower
+
+_DEFAULTS = {k: v for k, v in vars(P).items() if k.isupper()}
+
+
+def set_params(overrides):
+    """Restore the params.py values, then apply `overrides` (names must exist in params.py)."""
+    for k, v in _DEFAULTS.items():
+        setattr(P, k, v)
+    for k, v in overrides.items():
+        if k not in _DEFAULTS:
+            raise KeyError(f"params.py has no {k}")
+        setattr(P, k, type(_DEFAULTS[k])(v))
+
+
+def pilot(nav, target):
+    """The pilot flies straight at the target at V_MAX and slows down near it."""
+    if nav.p is None:
+        return np.zeros(2)
+    to_go = np.asarray(target, dtype=float) - nav.p
+    dist = float(np.hypot(*to_go))
+    return to_go / max(dist, 1e-9) * min(P.V_MAX, dist / 2.0)
+
+
+class Flight:
+    def __init__(self, start=START, target=ZONE_TARGET, seed=1):
+        heading = math.degrees(math.atan2(target[1] - start[1], target[0] - start[0]))
+        self.world = sim.World(start, heading, seed)
+        self.nav = location.Navigator()
+        self.zones = boundary.load_zones()
+        self.target = np.asarray(target, dtype=float)
+
+    def step(self):
+        dt = 1.0 / P.GNSS_RATE_HZ
+        ep, imu, returns = self.world.gnss(), self.world.imu(), self.world.radar()
+        nav = self.nav.update(ep, imu, dt)                           # flow 1
+        obstacles = location.radar_to_ned(returns, nav.heading)      # flow 2
+        v_pilot = pilot(nav, self.target)
+        dec = boundary.decide(v_pilot, nav, self.zones, obstacles)
+        clearance = self.world.clearance(self.zones)                 # truth, before moving
+        self.world.fly(dec.v_cmd, dt)
+        return {"ep": ep, "nav": nav, "returns": returns, "obstacles": obstacles,
+                "v_pilot": v_pilot, "dec": dec, "clearance": clearance}
+
+
+# ==========================================================================
+# Command line: four flights
+# ==========================================================================
+def run(label, target, overrides=None, seconds=50, change=None, every=4):
+    set_params(overrides or {})
+    f = Flight(START, target)
+    states, rows = {}, []
+    for k in range(seconds):
+        if change and k == change[0]:
+            for name, value in change[1].items():
+                setattr(P, name, value)
+        r = f.step()
+        nav, dec = r["nav"], r["dec"]
+        states[dec.state] = states.get(dec.state, 0) + 1
+        rows.append((k, r))
+
+    print(label)
+    print("     t  zone  bldg  sats  HDOP  sig_h   v    w   threat    gap  d_brake d_turn  state")
+    for k, r in rows[::every]:
+        nav, w = r["nav"], r["dec"].worst
+        th = (f"{w.kind:8s} {w.gap:6.1f}  {w.d_brake:6.1f} {w.d_turn:6.1f}" if w
+              else f"{'-':8s} {'':6s}  {'':6s} {'':6s}")
+        print(f"  {k:4d} {r['clearance'][0]:5.0f} {r['clearance'][1]:5.0f}  {nav.n_sats:4d}"
+              f"  {nav.hdop:4.2f} {nav.sigma_h:6.1f} {np.hypot(*nav.v):4.1f} {nav.w_gnss:4.2f}"
+              f"   {th}  {r['dec'].state}")
+    zmin = min(r["clearance"][0] for _, r in rows)
+    bmin = min(r["clearance"][1] for _, r in rows)
+    first = next((k for k, r in rows if r["dec"].state != "CLEAR"), None)
+    print("  states: " + ", ".join(f"{s} {n}" for s, n in states.items()))
+    print(f"  first intervention at t = {first} s; closest true distance: zone {zmin:.1f} m,"
+          f" building {bmin:.1f} m (aircraft radius {P.R_DRONE} m)"
+          f" -> {'BREACH' if min(zmin, bmin) < P.R_DRONE else 'no breach'}")
+    print()
+    return rows
+
+
+def main():
+    run(f"1. Cruise ({P.V_MAX:.0f} m/s) at the eSUA zone, open city sky (mask 15 deg)",
+        ZONE_TARGET)
+    run("2. 20 m/s at the building: too fast to brake, so it turns",
+        BUILDING_TARGET, {"V_MAX": 20.0})
+    run("3. Same as 1 in a street canyon (mask 40 deg): fewer satellites, bigger zone margin",
+        ZONE_TARGET, {"SKY_MASK_DEG": 40.0})
+    run("4. Same as 1, sky blocked (mask 50 deg) from t = 10 s: IMU only, margin keeps growing",
+        ZONE_TARGET, change=(10, {"SKY_MASK_DEG": 50.0}))
+    set_params({})
+
+
+# ==========================================================================
+# demo.html: JSON in, JSON out
+# ==========================================================================
+_flight = None
+
+
+def web_reset(arg):
+    """arg: JSON {"params": {...}, "target": [n, e]}. Returns the static scene."""
+    global _flight
+    cfg = json.loads(arg)
+    set_params(cfg.get("params", {}))
+    _flight = Flight(START, cfg.get("target", ZONE_TARGET))
+    return json.dumps({
+        "start": list(START), "zone_target": list(ZONE_TARGET), "building_target": list(BUILDING_TARGET),
+        "zones": [{"name": z.name, "ne": z.ne.tolist()} for z in _flight.zones],
+        "buildings": [{"name": n, "ne": poly.tolist()} for n, poly in sim.BUILDINGS.items()],
+        "defaults": _DEFAULTS,
+    })
+
+
+def web_params(arg):
+    """arg: JSON {...}. Apply new values now, without restarting the flight."""
+    set_params(json.loads(arg))
+    return "ok"
+
+
+def web_step(arg):
+    """arg: JSON {"target": [n, e]} (optional). One epoch; returns everything the page draws."""
+    cfg = json.loads(arg)
+    if "target" in cfg:
+        _flight.target = np.asarray(cfg["target"], dtype=float)
+    w = _flight.world
+    heading_before = w.heading
+    r = _flight.step()
+    nav, dec = r["nav"], r["dec"]
+    lst = lambda a: None if a is None else [float(x) for x in a]
+    used = set(nav.used)
+    return json.dumps({
+        "t": float(nav.t - sim.T0),
+        "truth": {"track": [lst(p) for p in w.track], "heading": w.heading,
+                  "heading_before": heading_before, "speed": w.speed,
+                  "zone": r["clearance"][0], "building": r["clearance"][1]},
+        "nav": {"fix": nav.fix, "p": lst(nav.p), "v": lst(nav.v), "v_gnss": lst(nav.v_gnss),
+                "v_imu": lst(nav.v_imu), "w": nav.w_gnss, "a": lst(nav.a),
+                "heading": nav.heading, "sigma_h": nav.sigma_h,
+                "hdop": None if math.isnan(nav.hdop) else nav.hdop,
+                "n_sats": nav.n_sats, "n_seen": len(r["ep"]["prn"]),
+                "iono": None if math.isnan(nav.iono_mean) else nav.iono_mean},
+        "sky": [[prn, el, az, seen, prn in used] for prn, el, az, seen in r["ep"]["sky"]],
+        "radar": [{"range": ret["range"], "bearing": ret["bearing"], "u": lst(o.u)}
+                  for ret, o in zip(r["returns"], r["obstacles"])],
+        "threats": [{"kind": th.kind, "name": th.name, "d": th.d, "n": lst(th.n_hat),
+                     "margin": th.margin, "gap": th.gap, "v_c": th.v_c, "v_allow": th.v_allow,
+                     "d_react": th.d_react, "d_brake": th.d_brake, "d_turn": th.d_turn,
+                     "worst": th is dec.worst} for th in dec.threats],
+        "state": dec.state, "v_pilot": lst(r["v_pilot"]), "v_cmd": lst(dec.v_cmd),
+    })
+
+
+if __name__ == "__main__":
+    main()
+</script>
+<script type="application/geo+json" data-file="zones.geojson">
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "EXAMPLE no-entry zone",
+        "note": "Made-up polygon for the demo, not a real eSUA zone. Replace with the published restricted zones."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+        [114.1814558, 22.3058546],
+        [114.1828145, 22.3057643],
+        [114.1832997, 22.3067576],
+        [114.1822322, 22.3074801],
+        [114.1811646, 22.3066673],
+        [114.1814558, 22.3058546]
+        ]]
+      }
+    }
+  ]
+}
+</script>
+
+<script>
+'use strict';
+const PYODIDE = 'https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js';
+
+// The page's own parameter values. They are handed to params.py on every
+// change; anything not listed here keeps its params.py value.
+const PAGE_PARAMS = [
+  { k: 'V_MAX',        v: 10,   step: 1,   min: 1,   max: 30, g: 'Aircraft', label: 'Cruise speed', unit: 'm/s' },
+  { k: 'R_DRONE',      v: 3,    step: 0.5, min: 0.5, max: 10, g: 'Aircraft', label: 'Aircraft radius r', unit: 'm' },
+  { k: 'K_SIGMA',      v: 3.03, step: 0.1, min: 1,   max: 5,  g: 'Boundary', label: 'Safety factor k', unit: '' },
+  { k: 'DT',           v: 1.6,  step: 0.1, min: 0.5, max: 5,  g: 'Boundary', label: 'Latency Δt', unit: 's' },
+  { k: 'SKY_MASK_DEG', v: 15,   step: 5,   min: 0,   max: 70, g: 'GNSS environment', label: 'Sky blocked below', unit: '°' },
+  { k: 'SIGMA_UERE',   v: 5,    step: 1,   min: 1,   max: 30, g: 'GNSS environment', label: 'Pseudorange σ_UERE', unit: 'm' },
+];
+const PREDEFINED = [
+  ['A_BRAKE', 'braking deceleration a', 'm/s²'], ['R_TURN', 'turning radius R', 'm'],
+  ['V_RETURN', 'back-off speed', 'm/s'], ['GNSS_RATE_HZ', 'GNSS rate', 'Hz'],
+  ['ELEV_MASK_DEG', 'receiver elevation mask', '°'], ['SIGMA_RR', 'range-rate σ', 'm/s'],
+  ['SIGMA_ACC_IMU', 'IMU accel σ', 'm/s²'], ['SENSOR_RANGE', 'radar range', 'm'],
+  ['SIGMA_RANGE', 'radar range σ', 'm'], ['SENSOR_MOUNT_DEG', 'radar mount angle', '°'],
+];
+
+const $ = s => document.querySelector(s);
+const deg = r => r * 180 / Math.PI;
+const f = (x, n = 1) => (x == null || !isFinite(x)) ? '–' : Number(x).toFixed(n);
+const hyp = v => v ? Math.hypot(v[0], v[1]) : 0;
+const hdg = v => (deg(Math.atan2(v[1], v[0])) + 360) % 360;   // NED vector -> heading, deg
+
+let py = null, scene = null, cur = null, params = {}, target = null;
+let playing = true, speed = 2, phase = 0, prevNow = null, trail = [], estTrail = [];
+let view = { s: 1, ox: 0, oy: 0 }, colors = {};
+
+// ------------------------------------------------------------------ Python
+function callPy(fn, arg) {
+  return py.runPython('main.' + fn + '(' + JSON.stringify(JSON.stringify(arg)) + ')');
+}
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = ok; s.onerror = () => fail(new Error('could not load ' + src));
+    document.head.appendChild(s);
+  });
+}
+async function boot() {
+  try {
+    await loadScript(PYODIDE);
+    py = await loadPyodide();
+    $('#ov-h').textContent = 'Loading numpy…';
+    await py.loadPackage('numpy');
+    py.FS.mkdirTree('/home/pyodide/lae');
+    document.querySelectorAll('script[data-file]').forEach(s =>
+      py.FS.writeFile('/home/pyodide/lae/' + s.dataset.file, s.textContent.replace(/^\n/, '')));
+    py.runPython("import sys; sys.path.insert(0, '/home/pyodide/lae'); import main");
+    params = Object.fromEntries(PAGE_PARAMS.map(p => [p.k, p.v]));
+    restart();
+    buildParams();
+    $('#ov').hidden = true;
+  } catch (err) {
+    $('#ov-h').textContent = 'Could not start Python';
+    const lines = String(err && err.message || err).trim().split('\n');
+    const last = lines.reverse().find(l => /Error\b/.test(l)) || lines[0];
+    $('#ov-p').textContent = last + ' — this page needs internet the first time, to load ' +
+      'Pyodide and numpy from cdn.jsdelivr.net.';
+    console.error(err);
+  }
+}
+
+function restart() {
+  const tgt = target || null;
+  scene = JSON.parse(callPy('web_reset', { params, ...(tgt ? { target: tgt } : {}) }));
+  if (!target) target = scene.zone_target;
+  trail = []; estTrail = []; phase = 0;
+  fitView();
+  step();
+}
+function step() {
+  cur = JSON.parse(callPy('web_step', { target }));
+  trail.push(...cur.truth.track);
+  if (cur.nav.p) estTrail.push(cur.nav.p);
+  if (trail.length > 4000) trail.splice(0, trail.length - 4000);
+  if (estTrail.length > 300) estTrail.shift();
+  panel();
+}
+
+// ------------------------------------------------------------------ loop
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (prevNow == null) prevNow = now;
+  const dt = Math.min(0.1, (now - prevNow) / 1000); prevNow = now;
+  if (!cur) return;
+  if (playing) {
+    phase += dt * speed * scene.defaults.GNSS_RATE_HZ;
+    while (phase >= 1) { phase -= 1; step(); }
+  }
+  draw();
+}
+
+// ------------------------------------------------------------------ map
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ['paper', 'panel', 'ink', 'ink2', 'grid', 'nav', 'vel', 'zone', 'bldg', 'radar', 'warn', 'ok', 'stop'])
+    colors[k] = cs.getPropertyValue('--' + k).trim();
+}
+function sizeCanvas(c) {
+  const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * d) || c.height !== Math.round(r.height * d)) {
+    c.width = Math.round(r.width * d); c.height = Math.round(r.height * d);
+  }
+  const ctx = c.getContext('2d'); ctx.setTransform(d, 0, 0, d, 0, 0);
+  return [ctx, r.width, r.height];
+}
+function fitView() {
+  const c = $('#map'), r = c.getBoundingClientRect();
+  const pts = [scene.start, scene.zone_target, scene.building_target,
+               ...scene.zones.flatMap(z => z.ne), ...scene.buildings.flatMap(b => b.ne)];
+  const pad = 70;
+  const n0 = Math.min(...pts.map(p => p[0])) - pad, n1 = Math.max(...pts.map(p => p[0])) + pad;
+  const e0 = Math.min(...pts.map(p => p[1])) - pad, e1 = Math.max(...pts.map(p => p[1])) + pad;
+  view.s = Math.min(r.width / (e1 - e0), r.height / (n1 - n0));
+  view.ox = r.width / 2 - view.s * (e0 + e1) / 2;
+  view.oy = r.height / 2 + view.s * (n0 + n1) / 2;
+}
+const W = p => [view.ox + view.s * p[1], view.oy - view.s * p[0]];          // NED -> screen
+const Winv = (x, y) => [(view.oy - y) / view.s, (x - view.ox) / view.s];   // screen -> NED
+
+function polyPath(ctx, ne) { ne.forEach((p, i) => { const [x, y] = W(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); }
+function poly(ctx, ne) { ctx.beginPath(); polyPath(ctx, ne); }
+function arrow(ctx, p, v, scale, col, w = 2) {
+  if (!v || hyp(v) < 0.2) return;
+  const [x0, y0] = W(p), [x1, y1] = W([p[0] + v[0] * scale, p[1] + v[1] * scale]);
+  const a = Math.atan2(y1 - y0, x1 - x0);
+  ctx.strokeStyle = ctx.fillStyle = col; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - 8 * Math.cos(a - 0.4), y1 - 8 * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - 8 * Math.cos(a + 0.4), y1 - 8 * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+}
+function label(ctx, txt, p, col, dx = 0, dy = 0) {
+  let [x, y] = W(p);
+  ctx.font = '600 12px ' + getComputedStyle(document.body).fontFamily;
+  const half = ctx.measureText(txt).width / 2 + 4;
+  x = Math.min(Math.max(x + dx, half), view.w - half) - dx;          // keep it on the canvas
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = colors.panel; ctx.strokeText(txt, x + dx, y + dy);
+  ctx.fillStyle = col; ctx.fillText(txt, x + dx, y + dy);
+}
+
+function draw() {
+  const [ctx, w, h] = sizeCanvas($('#map'));
+  view.w = w;
+  ctx.fillStyle = colors.panel; ctx.fillRect(0, 0, w, h);
+  const s = view.s, P = params, D = scene.defaults;
+
+  // 50 m grid and a 100 m scale bar
+  ctx.strokeStyle = colors.grid; ctx.lineWidth = 1; ctx.beginPath();
+  const [nTop] = Winv(0, 0), [nBot] = Winv(0, h), [, eL] = Winv(0, 0), [, eR] = Winv(w, 0);
+  for (let e = Math.ceil(eL / 50) * 50; e <= eR; e += 50) { const [x] = W([0, e]); ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+  for (let n = Math.ceil(nBot / 50) * 50; n <= nTop; n += 50) { const [, y] = W([n, 0]); ctx.moveTo(0, y); ctx.lineTo(w, y); }
+  ctx.stroke();
+  ctx.fillStyle = colors.ink2; ctx.fillRect(w - 16 - 100 * s, h - 18, 100 * s, 3);
+  ctx.font = '11px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+  ctx.fillText('100 m', w - 16, h - 22);
+  ctx.textAlign = 'left'; ctx.fillText('N ↑', 12, h - 22);
+
+  // zone: margin band (outer half of a thick stroke), then the zone itself
+  const zoneTh = cur.threats.find(t => t.kind === 'zone');
+  const zMargin = zoneTh ? zoneTh.margin : P.R_DRONE + P.K_SIGMA * cur.nav.sigma_h;
+  for (const z of scene.zones) {
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, w, h); polyPath(ctx, z.ne); ctx.clip('evenodd');
+    poly(ctx, z.ne); ctx.lineJoin = 'round';
+    ctx.globalAlpha = 0.16; ctx.strokeStyle = colors.zone; ctx.lineWidth = Math.min(2 * zMargin * s, 4000); ctx.stroke();
+    ctx.restore();
+    poly(ctx, z.ne);
+    ctx.globalAlpha = 0.22; ctx.fillStyle = colors.zone; ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = colors.zone; ctx.lineWidth = 2; ctx.stroke();
+    const top = z.ne.reduce((a, p) => p[0] > a[0] ? p : a);
+    label(ctx, z.name, top, colors.zone, 0, -30); label(ctx, 'eSUA-style zone · GeoJSON', top, colors.ink2, 0, -16);
+  }
+  // building: margin band, then the footprint
+  const bMargin = P.R_DRONE + P.K_SIGMA * D.SIGMA_RANGE;
+  for (const b of scene.buildings) {
+    poly(ctx, b.ne); ctx.lineJoin = 'round';
+    ctx.globalAlpha = 0.25; ctx.strokeStyle = colors.bldg; ctx.lineWidth = 2 * bMargin * s; ctx.stroke();
+    ctx.globalAlpha = 1; ctx.fillStyle = colors.bldg; ctx.fill();
+    const c = b.ne.reduce((a, p) => [a[0] + p[0] / b.ne.length, a[1] + p[1] / b.ne.length], [0, 0]);
+    label(ctx, b.name, [b.ne[0][0], c[1]], colors.ink, 0, 14); label(ctx, 'seen by radar only', [b.ne[0][0], c[1]], colors.ink2, 0, 28);
+  }
+
+  // target
+  const [tx, ty] = W(target);
+  ctx.strokeStyle = colors.ink; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(tx, ty, 7, 0, 2 * Math.PI); ctx.moveTo(tx - 12, ty); ctx.lineTo(tx + 12, ty); ctx.moveTo(tx, ty - 12); ctx.lineTo(tx, ty + 12); ctx.stroke();
+  label(ctx, 'pilot target', target, colors.ink2, 0, -20);
+
+  // truth: trail and the aircraft, interpolated within the epoch
+  const tr = cur.truth.track, k = Math.min(tr.length - 1, Math.floor(phase * tr.length));
+  const pos = tr[k];
+  let dh = cur.truth.heading - cur.truth.heading_before; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+  const head = cur.truth.heading_before + dh * Math.min(1, (k + 1) / tr.length);
+  ctx.strokeStyle = colors.ink2; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.6; ctx.beginPath();
+  const upto = trail.length - tr.length + k + 1;
+  for (let i = 0; i < upto; i += 2) { const [x, y] = W(trail[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.stroke(); ctx.globalAlpha = 1;
+
+  // radar: range circle and returns (rays from the aircraft along u_NED)
+  const [px, py_] = W(pos);
+  ctx.setLineDash([4, 5]); ctx.strokeStyle = colors.radar; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(px, py_, D.SENSOR_RANGE * s, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  for (const r of cur.radar) {
+    const hit = [pos[0] + r.u[0] * r.range, pos[1] + r.u[1] * r.range];
+    const [hx, hy] = W(hit);
+    ctx.strokeStyle = colors.radar; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(px, py_); ctx.lineTo(hx, hy); ctx.stroke();
+    ctx.fillStyle = colors.radar; ctx.beginPath(); ctx.arc(hx, hy, 4, 0, 2 * Math.PI); ctx.fill();
+  }
+
+  // look-ahead along the estimated velocity: reaction, braking, and the two turn arcs
+  const v = cur.nav.v, sp = hyp(v);
+  if (sp > 3) {
+    const u = [v[0] / sp, v[1] / sp], dR = sp * P.DT, dB = sp * sp / (2 * D.A_BRAKE);
+    const q = [pos[0] + u[0] * dR, pos[1] + u[1] * dR], b = [q[0] + u[0] * dB, q[1] + u[1] * dB];
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = colors.ink2; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(px, py_); ctx.lineTo(...W(q)); ctx.stroke();
+    ctx.strokeStyle = colors.warn; ctx.beginPath(); ctx.moveTo(...W(q)); ctx.lineTo(...W(b)); ctx.stroke();
+    ctx.lineCap = 'butt';
+    ctx.strokeStyle = colors.vel; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+    for (const side of [1, -1]) {
+      const c = [q[0] - side * u[1] * D.R_TURN, q[1] + side * u[0] * D.R_TURN];   // centre: R to the side
+      const [cx, cy] = W(c), [qx, qy] = W(q);
+      const a0 = Math.atan2(qy - cy, qx - cx);
+      ctx.beginPath(); ctx.arc(cx, cy, D.R_TURN * s, a0, a0 + side * Math.PI / 2, side < 0); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // GNSS estimate and its k·sigma_h circle
+  if (cur.nav.p) {
+    ctx.strokeStyle = colors.nav; ctx.lineWidth = 1; ctx.globalAlpha = 0.5; ctx.beginPath();
+    estTrail.forEach((p, i) => { const [x, y] = W(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); ctx.globalAlpha = 1;
+    const [ex, ey] = W(cur.nav.p);
+    ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(ex, ey, Math.min(P.K_SIGMA * cur.nav.sigma_h * s, 4000), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = colors.nav; ctx.beginPath(); ctx.arc(ex, ey, 4, 0, 2 * Math.PI); ctx.fill();
+  }
+
+  // velocity (estimate, teal) and the command sent (amber when the guardrail changed it)
+  arrow(ctx, pos, v, 2.5, colors.vel, 2.5);
+  const changed = cur.state !== 'CLEAR' && cur.state !== 'HOLD';
+  if (changed) arrow(ctx, pos, cur.v_cmd, 2.5, colors.warn, 2);
+
+  // aircraft
+  ctx.save(); ctx.translate(px, py_); ctx.rotate(head);
+  const r = Math.max(7, P.R_DRONE * s);
+  ctx.fillStyle = colors.ink; ctx.strokeStyle = colors.panel; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, -r * 1.4); ctx.lineTo(r, r); ctx.lineTo(0, r * 0.45); ctx.lineTo(-r, r); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+// ------------------------------------------------------------------ sky plot
+function sky() {
+  const [ctx, w] = sizeCanvas($('#sky')), c = w / 2, R = c - 10;
+  const rr = el => R * (90 - el) / 90;
+  ctx.clearRect(0, 0, w, w);
+  ctx.fillStyle = colors.grid; ctx.globalAlpha = 0.7;                      // sky hidden by buildings
+  ctx.beginPath(); ctx.arc(c, c, R, 0, 2 * Math.PI); ctx.arc(c, c, rr(Math.max(params.SKY_MASK_DEG, 0)), 0, 2 * Math.PI, true); ctx.fill();
+  ctx.globalAlpha = 1; ctx.strokeStyle = colors.ink2; ctx.lineWidth = 0.8;
+  for (const el of [0, 30, 60]) { ctx.beginPath(); ctx.arc(c, c, rr(el), 0, 2 * Math.PI); ctx.stroke(); }
+  ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.arc(c, c, rr(scene.defaults.ELEV_MASK_DEG), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  ctx.font = '600 10px ' + getComputedStyle(document.body).fontFamily; ctx.fillStyle = colors.ink2;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('N', c, c - R - 1);
+  for (const [prn, el, az, seen, used] of cur.sky) {
+    const x = c + rr(el) * Math.sin(az * Math.PI / 180), y = c - rr(el) * Math.cos(az * Math.PI / 180);
+    ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 2 * Math.PI);
+    if (used) { ctx.fillStyle = colors.nav; ctx.fill(); }
+    else { ctx.strokeStyle = seen ? colors.nav : colors.ink2; ctx.lineWidth = 1.2; ctx.stroke(); }
+  }
+}
+
+// ------------------------------------------------------------------ panel
+function kv(el, rows) { el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join(''); }
+const vtxt = v => v ? `${f(hyp(v))} m/s @ ${f(hdg(v), 0)}°` : '–';
+
+function panel() {
+  const n = cur.nav, P = params, D = scene.defaults;
+  kv($('#o-gnss'), n.fix ? [
+    ['satellites', `${n.n_sats} of ${n.n_seen}`],
+    ['Klobuchar iono', `−${f(n.iono)} m`],
+    ['wls() fix N, E', `${f(n.p[0], 0)}, ${f(n.p[1], 0)} m`],
+    ['HDOP', f(n.hdop, 2)],
+    ['σ_h = HDOP·σ_UERE', `${f(n.sigma_h)} m`],
+  ] : [
+    ['satellites', `${n.n_sats} of ${n.n_seen}`],
+    ['fix', 'none: fewer than 4'],
+    ['IMU dead reckoning', n.p ? `${f(n.p[0], 0)}, ${f(n.p[1], 0)} m` : 'no position yet'],
+    ['σ_h grows', `${f(n.sigma_h)} m`],
+  ]);
+  sky();
+  kv($('#o-vel'), [
+    ['Doppler LS v_gnss', vtxt(n.v_gnss)],
+    ['IMU v + a·Δt', vtxt(n.v_imu)],
+    ['IMU accel (NED)', `${f(hyp(n.a), 2)} m/s²`],
+    ['w = σ_imu²/(σ_imu²+σ_gnss²)', f(n.w, 2)],
+    ['v = w·v_gnss + (1−w)·v_imu', vtxt(n.v)],
+  ]);
+  const r = cur.radar[0];
+  kv($('#o-radar'), r ? [
+    ['returns', `${cur.radar.length} (range ${f(r.range)} m)`],
+    ['bearing, sensor frame', `${f(deg(r.bearing), 0)}°`],
+    ['→ body (mount)', `${f(deg(r.bearing) + D.SENSOR_MOUNT_DEG, 0)}° from nose`],
+    ['→ NED (heading ψ)', `${f(hdg(r.u), 0)}°  (ψ = ${f((deg(n.heading) + 360) % 360, 0)}°)`],
+  ] : [['returns', `none within ${D.SENSOR_RANGE} m`], ['heading ψ (IMU)', `${f((deg(n.heading) + 360) % 360, 0)}°`]]);
+
+  $('#o-threats').innerHTML = cur.threats.map(t => `<tr class="${t.worst ? 'worst' : ''}">
+    <td>${t.kind === 'zone' ? 'zone' : 'building'}</td><td>${f(t.d, 0)}</td><td>${f(t.margin)}</td><td>${f(t.gap, 0)}</td>
+    <td>${f(t.v_c)}</td><td>${f(t.v_allow)}</td><td>${f(t.d_brake, 0)}</td><td>${f(t.d_turn, 0)}</td></tr>`).join('')
+    || '<tr><td colspan="8">no position yet</td></tr>';
+
+  const st = cur.state, w = cur.threats.find(t => t.worst);
+  for (const el of [$('#o-state'), $('#chip')]) { el.dataset.s = st; el.textContent = st; }
+  const what = w ? (w.kind === 'zone' ? 'the zone' : 'the building') : '';
+  const why = {
+    CLEAR: w ? `Closing on ${what} at ${f(w.v_c)} m/s, below v_allow ${f(w.v_allow)}: braking still fits in the ${f(w.gap, 0)} m gap. Pilot command passes.` : 'Nothing near. Pilot command passes.',
+    BRAKE: w && w.v_c > w.v_allow
+      ? `Braking needs ${f(w.d_brake, 0)} m, turning ${f(w.d_turn, 0)} m; gap to ${what} is ${f(w.gap, 0)} m. Turning does not fit, so closing speed is cut to ${f(w.v_allow)} m/s.`
+      : `The pilot asks to close on ${what} faster than v_allow ${f(w && w.v_allow)} m/s; that part of the command is cut.`,
+    TURN: w ? `Too late to brake (needs ${f(w.d_brake, 0)} m, gap ${f(w.gap, 0)} m), but turning needs only ${f(w.d_turn, 0)} m: fly along the edge at the same speed.` : '',
+    RETURN: w ? `Inside the margin of ${what} (gap ${f(w.gap)} m): back off at ${f(D.V_RETURN)} m/s.` : '',
+    HOLD: 'No position yet: hover.',
+  }[st];
+  $('#o-why').textContent = why;
+  kv($('#o-cmd'), [['pilot asks', vtxt(cur.v_pilot)], ['command sent', vtxt(cur.v_cmd)],
+                   ['true clearance', `zone ${f(cur.truth.zone, 0)} m · building ${f(cur.truth.building, 0)} m`]]);
+}
+
+// ------------------------------------------------------------------ parameters
+function buildParams() {
+  const box = $('#params'), D = scene.defaults;
+  let html = '', g = '';
+  for (const p of PAGE_PARAMS) {
+    if (p.g !== g) { g = p.g; html += `<div class="grp">${g}</div>`; }
+    html += `<label for="p-${p.k}">${p.label}${p.unit ? ' (' + p.unit + ')' : ''}<small>${p.k} · params.py ${+Number(D[p.k]).toFixed(2)}</small></label>
+             <input id="p-${p.k}" type="number" step="${p.step}" min="${p.min}" max="${p.max}" value="${params[p.k]}">`;
+  }
+  box.innerHTML = html;
+  box.querySelectorAll('input').forEach(i => i.addEventListener('input', () => {
+    const p = PAGE_PARAMS.find(q => 'p-' + q.k === i.id);
+    i.classList.toggle('changed', Number(i.value) !== p.v);
+  }));
+  $('#predef').innerHTML = '<div class="grp">Predefined in params.py</div>' + PREDEFINED.map(([k, d, u]) =>
+    `<label>${d}<small>${k}</small></label><span style="font:500 13px var(--f-mono)">${+Number(D[k]).toFixed(2)} ${u}</span>`).join('');
+}
+function readParams() {
+  for (const p of PAGE_PARAMS) {
+    const x = Number($('#p-' + p.k).value);
+    params[p.k] = isFinite(x) ? Math.min(p.max, Math.max(p.min, x)) : p.v;
+    $('#p-' + p.k).value = params[p.k];
+  }
+}
+
+// ------------------------------------------------------------------ wiring
+$('#b-run').onclick = () => { playing = !playing; $('#b-run').textContent = playing ? 'Pause' : 'Run'; };
+$('#b-restart').onclick = () => cur && restart();
+$('#seg-speed').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  speed = Number(b.dataset.v);
+  $('#seg-speed').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+};
+$('#seg-target').onclick = e => {
+  const b = e.target.closest('button'); if (!b || !scene) return;
+  target = b.dataset.t === 'zone' ? scene.zone_target : scene.building_target;
+  $('#seg-target').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  restart();
+};
+$('#map').addEventListener('pointerdown', e => {
+  if (!cur) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  target = Winv(e.clientX - r.left, e.clientY - r.top).map(x => Math.round(x));
+  $('#seg-target').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+});
+$('#b-apply').onclick = () => { if (!cur) return; readParams(); callPy('web_params', params); panel(); };
+$('#b-apply-restart').onclick = () => { if (!cur) return; readParams(); restart(); };
+$('#b-defaults').onclick = () => {
+  PAGE_PARAMS.forEach(p => { params[p.k] = p.v; const i = $('#p-' + p.k); if (i) { i.value = p.v; i.classList.remove('changed'); } });
+  if (cur) callPy('web_params', params);
+};
+window.addEventListener('resize', () => { if (scene) fitView(); });
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+readColors();
+requestAnimationFrame(frame);
+boot();
+</script>
+</body>
+</html>

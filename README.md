@@ -1,343 +1,167 @@
-# SPP geofence: least squares, used three ways
+# LAE guardrail: keep an eVTOL out of no-entry zones and away from buildings
 
-A drone geofence where every safety number comes from the course's
-single-point-positioning least squares:
+Navigation course project (GNSS, least squares, SPP, Doppler, ionosphere,
+frame conversion).
 
-| LS output | becomes | used for |
+Low-altitude economy (LAE) flights in Hong Kong and Singapore share the sky
+with restricted zones (for example the zones on the HK CAD eSUA platform) and
+with tall buildings. This guardrail sits between the pilot (or autopilot) and
+the aircraft. Every GNSS epoch it lets the command through, cuts the speed,
+turns away or backs off.
+
+The two kinds of threat are measured differently, so the navigation splits
+into two flows:
+
+| | Flow 1: GNSS + IMU | Flow 2: radar |
 |---|---|---|
-| position `p`, cofactor `Q = (HᵀWH)⁻¹` | `HDOP`, `σ_h = HDOP·σ_UERE` | buffer width `k·σ_h` |
-| Doppler LS velocity `v` (same `H`) | closing speed `v_close` | buffer growth `v·Δt`, the speed field, retracing |
-| residuals `r`, `SSE ~ χ²(n−4)` | exclude a bad satellite, or flag the fix | trusting `σ_h` and `n̂` at all |
+| threat | eSUA-style no-entry zone (GeoJSON) | building |
+| distance from | our GNSS position, compared with the map | the sensor, directly |
+| margin | `r + k·σ_h`, σ_h = HDOP·σ_UERE ≈ 5–8 m | `r + k·σ_range`, σ_range = 0.5 m |
+| velocity | Doppler least squares, weighted with the IMU | same velocity |
 
-```
-r_buffer = r_drone + k·σ_h + v_close·Δt
-v_allow  = clip((d − r_drone − k·σ_h) / Δt, −V_return, V_max)
-```
-
-`v_allow` is a signed speed field. Positive: the fastest the drone may close
-on the nearest fence. Negative: it is inside the stop line and is pushed back
-out at that speed (section 5).
-
-Urban canyon → fewer satellites, worse geometry → higher HDOP → bigger buffer →
-the drone slows down earlier near fences, without any extra rule.
+**The point:** GNSS error matters for zones (they exist only on the map), but
+not for buildings (the radar measures the distance itself). Velocity matters
+for both, because it sets the braking and turning distances.
 
 ```mermaid
 flowchart LR
-  raw["GNSS epoch<br/>pseudorange ρ, Doppler f_D<br/>sat pos/vel, clocks"] --> pos["Pseudorange WLS<br/>p, Q → HDOP → σ_h"]
-  pos --> chi["χ² residual test<br/>exclude / flag"]
-  chi --> pos
-  pos --> vel["Doppler WLS (same H)<br/>v, clock drift"]
-  vel --> kf["LS with IMU prior<br/>= Kalman update"]
-  imu["IMU accel"] --> kf
-  pos --> bnd["boundary.py<br/>d, n̂ from distance field"]
-  kf --> bnd
-  bnd --> cap["v_allow, r_buffer<br/>CLEAR / SLOW / RETURN / RETRACE / HOLD"]
-  cap --> field["field.py"]
+  gnss["GNSS epoch<br/>pseudorange, Doppler"] --> fix["Klobuchar iono, then<br/>gnss_lib_py wls()<br/>p, HDOP, σ_h"]
+  gnss --> dop["Doppler LS, same H<br/>v_gnss"]
+  imu["IMU<br/>accel (body), heading"] --> blend["weighted<br/>v = w·v_gnss + (1−w)·v_imu"]
+  dop --> blend
+  geo["zones.geojson<br/>lat, lon"] --> zone["zone threat<br/>d, margin r + k·σ_h"]
+  fix --> zone
+  radar["radar<br/>range, bearing"] --> frames["sensor → body → NED<br/>rotation matrices"]
+  imu --> frames
+  frames --> obs["obstacle threat<br/>d = range, margin r + k·σ_range"]
+  zone --> dec["boundary.decide<br/>gap vs braking / turning distance"]
+  obs --> dec
+  blend --> dec
+  dec --> cmd["CLEAR · BRAKE · TURN · RETURN"]
 ```
+
+## Course topics in the code
+
+| topic | where |
+|---|---|
+| SPP, pseudorange least squares | `location.gnss_fix` calls `wls()` from gnss_lib_py: iterate `Δx = (HᵀH)⁻¹HᵀΔρ`, rows `H = [−eᵢᵀ, 1]` |
+| DOP | same function: `Q = (HᵀH)⁻¹` in NED, `HDOP = √(Q_NN + Q_EE)`, `σ_h = HDOP·σ_UERE` |
+| Doppler velocity | `location.doppler_velocity`: `ρ̇ᵢ − eᵢ·v_sat,i = −eᵢ·v + c·δṫ`, same H, one linear solve |
+| ionosphere | Klobuchar model from gnss_lib_py, removed from each pseudorange before the fix |
+| frame conversion | ECEF ↔ NED (`LocalCoord`), GeoJSON lat/lon → NED (`boundary.load_zones`), body ↔ NED with `rot(ψ)` for the IMU and radar, sensor → body with `rot(mount)` |
+| weighted least squares | GNSS/IMU blend: inverse-variance weights, `w = σ_imu² / (σ_imu² + σ_gnss²)`, σ_gnss = HDOP·σ_ρ̇ |
+
+## The decision (`boundary.py`)
+
+For each threat, with closing speed `v_c = −v·n̂` (n̂ points away from it):
+
+```
+gap      = d − margin                         room left
+d_react  = v_c·Δt                             flown before a decision acts (Δt = 1.6 s)
+d_brake  = d_react + v_c² / (2a)              brake to a stop        (a = 2.5 m/s²)
+d_turn   = d_react + R·(1 − sin α)            turn until parallel    (R = 50 m; head-on α = 0)
+v_allow  = a·(√(Δt² + 2·gap/a) − Δt)          fastest v_c that can still brake within the gap
+```
+
+| state | condition | command |
+|---|---|---|
+| CLEAR | `v_c ≤ v_allow` | pilot command passes |
+| BRAKE | too fast and `gap < d_turn` | closing part of the command cut to `v_allow`, sideways part kept |
+| TURN | too fast but `gap ≥ d_turn` | same speed, along the edge |
+| RETURN | `gap ≤ 0` | back off at 2 m/s |
+
+Below `v = √(2aR) = 15.8 m/s` braking is the shorter way out; above it,
+turning is (`python params.py` prints the table).
+
+**Besides braking and turning distance**, the required distance already has:
+
+* the **reaction distance** `v·Δt` (GNSS period + compute + reaction). At 10 m/s this is 16 m of the 36 m.
+* the **margin**: aircraft radius plus `k·σ` of whatever measured the distance.
+
+Not modelled yet (see FUTURE_WORK.md):
+
+* **sensor range**: you cannot react to a building before the radar sees it, so `v ≤ v_allow(SENSOR_RANGE − margin)`, about 23 m/s here.
+* **wind**: a tailwind lengthens braking.
+* **vertical escape**: climbing as a third option.
 
 ## Files
 
 | file | job |
 |---|---|
-| `params.py` | Design inputs only: drone radius, timing (`Δt`), risk → `k`, noise sigmas, χ² false-alarm rate, filter noise. Nothing measured lives here any more. |
-| `spp.py` | Pseudorange WLS, Doppler WLS, DOPs, χ² fault detection and exclusion, the velocity filter. Outputs `NavSolution` with `p_enu`, `v_enu`, `sigma_h` per epoch. |
-| `boundary.py` | Fence polygons (lat/lon) → local metres → precomputed signed distance field. Speed field `v_allow`, state, velocity command, and `ReturnGuard` (push-back and retrace). |
-| `sim.py` | Synthetic epochs with known truth (constellation, canyon, NLOS, drone, IMU). Test data only, not course content. |
-| `drone_game.html` | The demo: fly a drone through open park, streets and a deep canyon. Every input from `params.py` is editable, the speed field is drawn in colour, and a panel shows each decision step live. Open it in a browser. |
-| `velocity_demo.html` | Slide deck on where `v` comes from (Doppler LS, χ² test, IMU prior). |
-| `field.py` | Unchanged. It is not in this repo yet; copy it in. See "Hooking up field.py" below. |
+| `params.py` | Predefined numbers (aircraft, latency, k, sensor noise, sky mask). `demo.html` overrides a few at run time; the file never changes. |
+| `sim.py` | The real world, simulated: satellites, ionosphere, receiver clock, the aircraft (braking and turning limits), IMU, radar, one building. Test data only. |
+| `location.py` | Flow 1 (GNSS fix, Doppler velocity, GNSS/IMU weighting) and flow 2 (radar returns → NED). |
+| `boundary.py` | Zones from GeoJSON, threats, braking and turning distances, the decision. |
+| `main.py` | The closed loop. `python main.py` flies four scripted flights; `web_*` functions serve the demo. |
+| `gnss_lib_py_subset.py` | The parts of Stanford NAV Lab's [gnss_lib_py](https://github.com/Stanford-NavLab/gnss_lib_py) (MIT) used here: `wls`, coordinate frames, elevation/azimuth, Klobuchar. |
+| `zones.geojson` | One EXAMPLE no-entry zone. Made up, not a real eSUA zone. |
+| `demo.html` | Browser demo. It runs the Python files above with Pyodide. |
+| `make_demo.py` | Copies the `.py` files and `zones.geojson` into `demo.html`. |
+| `FUTURE_WORK.md` | Features removed in the rebuild, as an improvement plan. |
 
-Only `numpy` is needed (Python 3.10+).
-
-```
-python params.py      # derived k, Δt and a buffer table
-python spp.py         # self-test: open sky, injected fault, urban canyon
-python spp.py my.csv  # run on your own epochs (format below)
-python boundary.py    # closed loop: push at a fence (RETURN), enter a canyon (RETRACE)
-```
-
----
-
-## 1. Position, covariance and the fence buffer
-
-For satellite `i` with corrected pseudorange `ρ_i` (satellite clock added back,
-troposphere removed, Earth rotation applied to the satellite position):
+## Run
 
 ```
-ρ_i = ‖s_i − x‖ + b + ε_i          b = c·δt (receiver clock, metres)
-e_i = (s_i − x) / ‖s_i − x‖         unit line of sight, receiver → satellite
-H   = [ −e_iᵀ  1 ]                  one row per satellite
-Δρ  = ρ − (‖s − x₀‖ + b₀)
-Δx  = (HᵀWH)⁻¹ HᵀW Δρ               iterate until Δx is tiny (spp.solve_position)
+pip install numpy
+python main.py          # four flights, step by step
+python params.py        # braking vs turning distance
 ```
 
-Weights are dimensionless, `w_i = sin²(el_i)`, so a zenith satellite has
-weight 1 and satellite `i` has `σ_i = σ_UERE / sin(el_i)`. With that scaling
+Open `demo.html` in a browser. The first load downloads Pyodide and numpy
+(about 10 MB) from cdn.jsdelivr.net, so it needs internet. After editing any
+`.py` file or `zones.geojson`, run `python make_demo.py` to refresh the copies
+inside the page.
 
-```
-cov(x̂) = σ_UERE² · Q,     Q = (HᵀWH)⁻¹                    (4×4)
-Q_ENU  : the same Q built from rows [ −(R·e_i)ᵀ  1 ]    (R = ECEF→ENU)
-HDOP   = √(Q_EE + Q_NN)
-σ_h    = HDOP · σ_UERE                                  (2-D rms, "drms")
-```
+## The demo
 
-`spp.py` also reports the classic equal-weight HDOP (`hdop_geom`) so you can
-compare with the lecture definition.
+The page shows a map with one no-entry zone and one building, and the aircraft
+with its radar range, GNSS fix and look-ahead (reaction, braking, turn arcs).
+The right side shows the five steps of `main.Flight.step`, with the numbers
+returned by the Python each epoch.
 
-**Choosing k.** For a circular 2-D Gaussian, `P(|error| > k·drms) = e^(−k²)`.
-`params.P_EXCEED = 1e-4` gives `k = √(−ln 1e-4) = 3.03`.
+* **Click the map** to move the pilot's target, or use *Fly at: Zone / Building*.
+* **Parameters** (a closed dropdown): the page has its own values for cruise
+  speed, aircraft radius, k, latency Δt, sky blockage and σ_UERE, and hands
+  them to `params.py` at run time. *Apply now* changes them mid-flight. Try
+  raising *Sky blocked below* to 50° to lose GNSS. Everything else (turning
+  radius, braking, sensor, IMU) is predefined in `params.py` and listed there
+  read-only.
+* Things to try: fly at the building at 10 m/s (BRAKE), then at 20 m/s (TURN).
+  Fly at the zone with *Sky blocked below* 15° and then 40°: it stops further
+  out.
 
-## 2. Velocity from Doppler (how `v` is calculated)
+## Results (`python main.py`, seed 1)
 
-The receiver measures Doppler `f_D` in Hz. Convert it to range rate (positive
-Doppler means the satellite is getting closer, so the range is shrinking):
-
-```
-ρ̇_i = −λ · f_D,i          λ = c / f_L1 = 0.1903 m
-```
-
-The range rate is the relative velocity along the line of sight, plus the
-clock drifts:
-
-```
-ρ̇_i = e_iᵀ (v_sat,i − v_u) + c·δṫ_u − c·δṫ_sat,i
-```
-
-Everything about the satellite is known from the ephemeris, so move it to the
-left. What is left is linear in the unknowns `[v_u, c·δṫ_u]`:
-
-```
-z_i = ρ̇_i − e_iᵀ v_sat,i + c·δṫ_sat,i  =  −e_iᵀ v_u + c·δṫ_u
-z   = H · [v_u ; c·δṫ_u]                with the SAME rows H = [ −e_iᵀ  1 ]
-v̂   = (HᵀWH)⁻¹ HᵀW z                    one shot, no iteration
-cov = σ_ρ̇² · Q                          σ_v,h = HDOP · σ_ρ̇
-```
-
-Code path (`spp.SPP.step`):
-
-1. `los_geometry` gives `e_i` and Earth-rotation-corrected satellite velocities at the final position fix.
-2. `doppler_system` builds `z` and `H` (rows rotated into ENU so `v` comes out as east/north/up).
-3. `fde(solve_velocity, …)` solves and runs the χ² test on the Doppler residuals with `σ_ρ̇`.
-4. The filter (section 4) blends that with the IMU prediction.
-
-Same geometry, same weights, same HDOP. Bad geometry inflates velocity noise
-exactly as it inflates position noise.
-
-In the buffer, `v` is the **closing speed** `v_close = max(0, −v·n̂)`, where
-`n̂` is the distance-field gradient (pointing away from the nearest fence).
-Flying parallel to a fence does not grow the buffer. Set
-`params.USE_CLOSING_SPEED = False` to use `|v|` instead.
-
-## 3. Filter 1: residual χ² test (RAIM-lite)
-
-After any solve, the weighted residuals tell you whether the measurements
-agree with each other:
-
-```
-r   = Δρ − H·Δx
-SSE = rᵀ W r / σ²   ~  χ²(n − 4)     if all satellites are healthy
-```
-
-`spp.fde` (used for both pseudoranges and Doppler):
-
-1. If `n − 4 < 1`: no redundancy, nothing to test.
-2. If `SSE ≤ T(n−4, P_fa)`: pass. The threshold is the exact χ² quantile (`chi2_threshold`, no scipy).
-3. Otherwise drop the satellite with the largest **standardised** residual
-   `|r_i| / √(W⁻¹ − H Q Hᵀ)_ii` and solve again. Exclusion needs `n ≥ 6`, so the reduced set can still be tested.
-
-The position fix is **verified** only if the test passes with at least
-`params.MIN_DOF_INTEGRITY = 3` redundant satellites left. An unverified fix
-still reports a position, but `σ_h` is raised to `SIGMA_H_FALLBACK = 50 m`.
-The buffer then grows to about 150 m, so the drone stays well away from fences
-until the sky opens up.
-
-Why 3 and not 1: in the synthetic deep canyon (5–6 satellites, 2–3 of them
-NLOS) two biased satellites can hide inside a 1–2 dof residual space. With
-`MIN_DOF_INTEGRITY = 1` the self-test had 117 of 180 epochs where the true
-error was larger than `k·σ_h`. With 3 there were none, and open sky is
-unaffected because it normally has 4–5 dof.
-
-## 4. Filter 2: least squares with an IMU prior (= Kalman filter)
-
-State `x = [v_E, v_N, v_U, c·δṫ]`. Each epoch (`spp.VelocityFilter`):
-
-```
-predict   x⁻ = x + [a_imu·Δt ; 0]
-          P⁻ = P + diag((σ_a·Δt)², (σ_a·Δt)², (σ_a·Δt)², σ_d²·Δt)
-
-update    x̂ = argmin  ‖z − Hx‖²_(W/σ_ρ̇²)  +  ‖x − x⁻‖²_(P⁻⁻¹)
-            = (HᵀR⁻¹H + P⁻⁻¹)⁻¹ (HᵀR⁻¹z + P⁻⁻¹x⁻)       R⁻¹ = W/σ_ρ̇²
-          P = (HᵀR⁻¹H + P⁻⁻¹)⁻¹
-```
-
-That is the Kalman update in information form: `spp.py` checks it against
-`x⁻ + K(z − Hx⁻)` and they agree to 1e-14. Two consequences you can show:
-
-* **The trade-off is a single knob.** `σ_a` small means trusting the IMU, large means trusting GNSS. Down-weighting low-elevation satellites in `W` is the course-legit version of "trust GNSS less".
-* **It keeps working with fewer than 4 satellites.** The prior adds four pseudo-measurements, so 1–3 Doppler rows still improve `v`. With 0 rows the filter coasts on the IMU and its `σ` grows.
-
-**Unverified Doppler is de-weighted.** If the Doppler χ² test does not pass
-with `MIN_DOF_INTEGRITY` spare satellites, its rows get `σ_ρ̇ × 5`
-(`UNVERIFIED_RR_SCALE`), so the IMU prior carries `v`. In the NLOS canyon the
-raw Doppler velocity can be about 4 m/s wrong, nearly opposite the true
-motion. Following it made dead-reckoned retracing drift up to 95 m. With the
-de-weighting, retrace lands within 0–6 m (8 seeds), and canyon velocity error
-drops from 0.94 to 0.70 m/s. Pure IMU (`× 1000`) was worse, at 1.2 m/s, because it
-drifts over long canyon stretches.
-
-The simulated IMU reports the mean acceleration over each epoch (delta-v / dt),
-as a real IMU's integrated output does.
-
-Without IMU data the prior is constant velocity with `SIGMA_ACC_NO_IMU`.
-Position stays a snapshot fix, so `σ_h` keeps its direct HDOP meaning.
-
-## 5. Closing the loop and returning the drone (`boundary.py`)
-
-```
-d        = signed distance from p̂ to the nearest fence edge (+ = allowed side)
-n̂        = ∇d / |∇d|                    (points away from the fence)
-v_allow  = clip((d − r_drone − k·σ_h) / Δt, −V_return, V_max)
-```
-
-`d ≥ r_buffer` solved for the closing speed gives `v_close ≤ v_allow`. The
-whole decision is that one inequality, plus what to do when it cannot be
-trusted.
-
-**Verified fix** (χ² passed with ≥ `MIN_DOF_INTEGRITY` spare satellites): `n̂` is trusted.
-
-| state | condition | command (`limit_velocity`) |
+| flight | what happens | closest true distance |
 |---|---|---|
-| CLEAR | `v_close ≤ v_allow` | stick passes through |
-| SLOW | `0 ≤ v_allow < v_close` | closing part cut to `v_allow`, sideways part kept |
-| RETURN | `v_allow < 0` (inside the stop line `r_drone + k·σ_h`) | closing part forced to `v_allow`: pushed out along `n̂` at up to `V_return` |
+| 1. zone, 10 m/s, open sky (8 satellites, HDOP 1.03) | BRAKE from t = 19 s, when the gap to the margin falls below the braking distance (36 m at 10 m/s); then hovers at the margin | zone 15.1 m |
+| 2. building, 20 m/s | TURN 98 m from the tower (braking would need 113 m, turning 76 m), slides along it and flies round | building 16.2 m |
+| 3. zone, street canyon, sky mask 40° (5 satellites, HDOP 1.47) | margin grows from 18.6 to 25.6 m; it hovers 25 m out instead of 20 m (mean of 10 seeds) | zone 15.8 m |
+| 4. zone, sky blocked from t = 10 s | IMU dead reckoning, σ_h grows as ½σ_a·t², the margin grows and it backs away | zone 45.2 m |
 
-SLOW and RETURN are the same line of code, `closing ≤ v_allow`. A negative
-`v_allow` turns the cap into a push-back.
+The aircraft radius is 3 m, so none of these breach. Across 9 cases × 10
+seeds (including 25 m/s, Δt = 3 s, and σ_UERE = 10 m with k = 2), none of the
+90 flights breached.
 
-**Fix not verified** (`σ_h` → 50 m fallback): `n̂` is not trusted.
+## The GNSS library, and why only part of it
 
-| state | condition | command |
-|---|---|---|
-| CLEAR / SLOW | `v_allow ≥ 0` | whole speed `|v|` capped at `v_allow` (`cap_speed`), direction kept |
-| RETRACE | `v_allow < 0` | fly back to the last verified fix, steering by dead reckoning |
-| HOLD | no fix, never verified, or retrace done | hover until a verified fix |
+The position, frames and ionosphere come from gnss_lib_py, copied into one
+file with function bodies unchanged. The only edits are the imports and the
+Klobuchar inputs, marked `# CHANGED:`. The full package also installs pandas,
+scipy, matplotlib, plotly and georinex, which the browser demo cannot load.
 
-RETRACE is the "logic of return" when position cannot be trusted. The drone
-got to its last verified fix safely, so going back there is safe.
-`ReturnGuard` keeps that fix `p_lv` and a dead-reckoned position
-`p_dr = p_lv + Σ v̂·Δt`, built from the filtered velocity (Doppler + IMU, section 4).
-It commands `(p_lv − p_dr)/|…| · min(V_return, dist/Δt)`. Once there, it holds
-instead of continuing to dead-reckon, because a slightly biased `v̂` would make a
-"hovering" drone wander. Normal logic resumes as soon as a fix is verified.
+gnss_lib_py has no Doppler velocity solver, so `doppler_velocity` (10 lines)
+and the GNSS/IMU weighting are this project's own code.
 
-History of this design:
-1. An early version only cut the closing component at the stop line and kept
-   the sideways part. In the NLOS canyon it flew straight through a fence,
-   because `n̂` at a 100 m-wrong estimate pointed the wrong way. So unverified
-   fixes never use `n̂`.
-2. Retrace first integrated raw canyon Doppler and drifted up to 95 m. That is
-   why the filter now de-weights unverified Doppler.
+Also considered:
 
-`Δt = 1/rate + compute + reaction = 1.0 + 0.1 + 0.5 = 1.6 s`: the time the drone
-keeps flying at `v` before a new command takes effect.
-
-The distance field is computed once on a 2 m grid (`DistanceField`); look-ups
-are bilinear, with an exact fallback off the grid. Fences are `keep_out`
-(restricted zones) or `keep_in` (approved operating area). `EXAMPLE_FENCES`
-are made-up polygons around the default origin. For real zones, export them
-as GeoJSON and use `load_geojson()`.
-
-## Self-test results
-
-`python spp.py` (synthetic, seed 3, 180 s at 8 m/s):
-
-| case | sats | HDOP | pos rms | predicted σ_h | vel rms raw → filtered | χ² |
-|---|---|---|---|---|---|---|
-| open sky | 9.0 | 1.76 | 8.85 m | 8.82 m | 0.36 → 0.27 m/s | 1 exclusion |
-| + 60 m fault on one satellite for 90 s | 8.5 | 1.86 | 9.18 m | 9.28 m | 0.38 → 0.29 m/s | 91 exclusions, error unchanged |
-| deep canyon, NLOS | 5.5 | 2.83 | 56 m | 50 m (fallback) | 1.66 → 0.70 m/s | every epoch unverified, 0 misleading |
-
-`python boundary.py` (stick held at 10 m/s towards restricted zone A for 70 s):
-
-| case | states (epochs) | outcome | breach |
-|---|---|---|---|
-| open sky | CLEAR 21, SLOW 15, RETURN 34 | slows from 48 m, pushed back and held about 28 m out, closest 17 m | no |
-| street canyon, 15 m buildings | same pattern | held about 31 m out | no |
-| deep canyon from the start | HOLD 70 | never verified, never moves | no |
-| open sky, deep canyon from t = 17 s | CLEAR 17, RETRACE 7, HOLD 46 | retraces to 4 m from the last verified fix, then holds | no |
-
-Across seeds 1–8, none of the 32 runs breached. Retrace landed within 0–6 m
-of the last verified fix on every seed.
-
-## Running on UrbanNav
-
-UrbanNav ships RINEX observation and navigation files. `spp.py` takes epochs
-that already have satellite positions, so compute those with your lab's
-ephemeris code (or RTKLIB) and write one CSV row per satellite per epoch:
-
-| column | unit | required |
-|---|---|---|
-| `t` | s | yes (time tag; rows with the same `t` form one epoch) |
-| `prn` | text | yes |
-| `x, y, z` | m, ECEF at transmit time | yes |
-| `pr_m` | m, raw pseudorange | yes |
-| `vx, vy, vz` | m/s, ECEF | for velocity |
-| `rr_mps` **or** `doppler_hz` | m/s or Hz (`rr = −λ·f_D`) | for velocity |
-| `clk_m` | m, `c·δt_sat` (added to `pr`) | recommended |
-| `clk_drift_mps` | m/s, `c·δṫ_sat` | optional |
-| `iono_m` | m, e.g. Klobuchar (subtracted) | optional |
-| `acc_e, acc_n, acc_u` | m/s², IMU in ENU, gravity removed | optional (filter) |
-
-`sim.write_csv()` writes this format if you want a template. Move
-`params.ORIGIN_*` to the start of your run so ENU stays small.
-
-Two things to check on real data:
-
-* If your satellite positions are already corrected for Earth rotation, set `APPLY_EARTH_ROTATION = False`, or the correction is applied twice.
-* GPS only: `H` has one clock column. Adding Galileo or BeiDou means one inter-system bias column per extra constellation, and it also gives the χ² test the redundancy it needs in canyons.
-
-## Hooking up field.py
-
-`field.py` is not in this repo, so its interface was not available when this
-was written. Whatever it reads, the values now come from here:
-
-```python
-from spp import SPP
-from boundary import DistanceField, ReturnGuard, example_fences
-
-solver = SPP()
-guard = ReturnGuard(DistanceField(example_fences()))   # or load_geojson("esua.geojson")
-
-sol = solver.step(epoch)                    # sol.p_enu, sol.v_enu, sol.sigma_h, sol.integrity
-v_cmd, chk = guard.step(sol, v_goal, dt)    # chk.state, chk.d, chk.n_hat, chk.v_allow, chk.r_buffer
-```
-
-If `field.py` used to read `p`, `v`, `sigma` from `params.py`, point those
-reads at `sol.p_enu`, `sol.v_enu` and `sol.sigma_h` instead.
-
-## The game (`drone_game.html`)
-
-Fly with WASD / arrow keys, or press and hold on the map. Collect rings 1–5,
-then return to H. The map has an open park (10 satellites), streets with
-15 m buildings (7 satellites, HDOP 2.5, still verifiable) and a deep canyon
-with 30 m buildings (5 satellites, never verifiable).
-
-* **Speed field in colour.** Bands show `v_allow` for the current `σ_h`. Teal to amber means you may approach at most that fast; magenta means inside the stop line, with arrows showing the push-back direction `n̂`. The bands breathe as `σ_h` changes between districts.
-* **Decision panel.** Every epoch it lists the questions `check()` and `ReturnGuard.step()` ask, with the numbers: fix? verified (χ², n−4)? inside the stop line (`v_allow` worked out)? closing too fast? The result and the exact command follow.
-* **Inputs.** Everything in `params.py` that shapes the decision is editable: `r_drone`, `V_max`, `V_return`, GNSS rate, compute and reaction time (→ Δt), the risk (→ k), `σ_UERE`, `σ_ρ̇`, min redundancy, fallback `σ_h`, IMU `σ_a`. Values are remembered in the browser.
-* **Things to try.** Push into a fence and let go (SLOW → RETURN). Fly into the deep canyon (RETRACE to the blue diamond). Press `L` to turn the logic off and breach. Raise `σ_UERE` or the reaction time and watch the bands grow.
-
-The game models LOS-only satellites with time-correlated pseudorange errors;
-NLOS reflections are only in `sim.py`.
+* **laika** (comma.ai): has a velocity fix, but builds it with sympy.
+* **rtklib-py** and **MobileGNSS-SPP**: RTKLIB ports that need RINEX observation and navigation structures.
+* **pyrtklib** (PolyU IPNL): a C extension that needs RINEX. The right tool for real UrbanNav data (FUTURE_WORK #20).
 
 ## Limits
 
-* **NLOS is not geometry.** HDOP covers geometry only. A reflected signal adds a bias that HDOP cannot see, which is why the χ² test and `MIN_DOF_INTEGRITY` exist. In a deep GPS-only canyon the honest answer is "not verified", so the drone keeps a big buffer.
-* **Elongated ellipses.** `k` assumes a circular error. Canyon geometry stretches the ellipse across the street, which makes the tail heavier along that axis. `NavSolution.sigma_major` (1-σ semi-major axis) is reported; using it instead of `σ_h` is the conservative option.
-* **White-noise simulator.** Real multipath is time-correlated, so real residuals look smoother and biases persist for longer than in `sim.py`.
-
-## Future work: sensors
-
-Sensors (camera, lidar, radar) stay on the future-work slide. Teaser: the
-same buffer logic gives "you can't outrun your headlights": with sensing
-range `R_s`, the speed must satisfy `R_s ≥ r_drone + v·Δt + v²/(2a)`.
+The world is simulated: white-noise GNSS errors, one sky mask instead of real
+building shadows, no NLOS, a radar that sees everything in range, level
+flight, no wind. The guardrail is not a path planner: if the pilot keeps
+pushing into a zone, the aircraft waits at the margin. See `FUTURE_WORK.md`.
