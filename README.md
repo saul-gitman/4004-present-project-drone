@@ -1,5 +1,22 @@
 # LAE guardrail: keep an eVTOL out of no-entry zones and away from buildings
 
+```mermaid
+flowchart LR
+  gnss["GNSS epoch<br/>pseudorange, Doppler"] --> fix["Klobuchar iono, then<br/>gnss_lib_py wls()<br/>p, HDOP, σ_h"]
+  gnss --> dop["Doppler LS, same H<br/>v_gnss"]
+  imu["IMU<br/>accel (body), heading"] --> blend["weighted<br/>v = w·v_gnss + (1−w)·v_imu"]
+  dop --> blend
+  geo["zones.geojson<br/>lat, lon"] --> zone["zone threat<br/>d, margin r + k·σ_h"]
+  fix --> zone
+  radar["radar<br/>range, bearing"] --> frames["sensor → body → NED<br/>rotation matrices"]
+  imu --> frames
+  frames --> obs["obstacle threat<br/>d = range, margin r + k·σ_range"]
+  zone --> dec["boundary.decide<br/>gap vs braking / turning distance"]
+  obs --> dec
+  blend --> dec
+  dec --> cmd["CLEAR · BRAKE · TURN · RETURN"]
+```
+
 Navigation course project (GNSS, least squares, SPP, Doppler, ionosphere,
 frame conversion).
 
@@ -22,23 +39,6 @@ into two flows:
 **The point:** GNSS error matters for zones (they exist only on the map), but
 not for buildings (the radar measures the distance itself). Velocity matters
 for both, because it sets the braking and turning distances.
-
-```mermaid
-flowchart LR
-  gnss["GNSS epoch<br/>pseudorange, Doppler"] --> fix["Klobuchar iono, then<br/>gnss_lib_py wls()<br/>p, HDOP, σ_h"]
-  gnss --> dop["Doppler LS, same H<br/>v_gnss"]
-  imu["IMU<br/>accel (body), heading"] --> blend["weighted<br/>v = w·v_gnss + (1−w)·v_imu"]
-  dop --> blend
-  geo["zones.geojson<br/>lat, lon"] --> zone["zone threat<br/>d, margin r + k·σ_h"]
-  fix --> zone
-  radar["radar<br/>range, bearing"] --> frames["sensor → body → NED<br/>rotation matrices"]
-  imu --> frames
-  frames --> obs["obstacle threat<br/>d = range, margin r + k·σ_range"]
-  zone --> dec["boundary.decide<br/>gap vs braking / turning distance"]
-  obs --> dec
-  blend --> dec
-  dec --> cmd["CLEAR · BRAKE · TURN · RETURN"]
-```
 
 ## Course topics in the code
 
